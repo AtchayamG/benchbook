@@ -203,6 +203,29 @@ class AssistantDraftPickupRequest(BaseModel):
     warranty_days: int = 30
 
 
+class AdviceRequest(BaseModel):
+    """Payload for requesting AI advisory for an owned job."""
+
+    operation: str  # "parts", "estimate", "pickup"
+    expected_version: int
+    idempotency_key: str | None = None
+
+
+class SessionResponse(BaseModel):
+    """Payload returning workbench session status."""
+
+    workspace_id: str
+    status: str  # "active", "expired", "not_found"
+    created_at: str
+    expires_at: str
+    job_count: int
+    max_jobs: int = 50
+    active_workspaces: int = 0
+    max_workspaces: int = 1000
+    is_new: bool | None = None
+    authenticated: bool = True
+
+
 class ErrorResponse(BaseModel):
     """Standardized error envelope."""
 

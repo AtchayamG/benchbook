@@ -56,6 +56,18 @@ describe('Benchbook Frontend Workflow Tests', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
 
+    vi.spyOn(api, 'initSession').mockResolvedValue({
+      workspace_id: 'ws_test_bench_123',
+      authenticated: true,
+      expires_at: '2026-09-13T00:00:00Z',
+    });
+
+    vi.spyOn(api, 'getSession').mockResolvedValue({
+      workspace_id: 'ws_test_bench_123',
+      authenticated: true,
+      expires_at: '2026-09-13T00:00:00Z',
+    });
+
     vi.spyOn(api, 'getHealth').mockResolvedValue({
       status: 'ok',
       app: 'Benchbook',
@@ -108,6 +120,30 @@ describe('Benchbook Frontend Workflow Tests', () => {
       expect(screen.getByText(/Current Stage Action: INTAKE/)).toBeInTheDocument();
       expect(screen.getByText('Save Diagnosis & Proceed to Parts')).toBeInTheDocument();
     });
+  });
+
+  it('waits for the session cookie before loading jobs', async () => {
+    let finishSession!: (value: Awaited<ReturnType<typeof api.initSession>>) => void;
+    vi.spyOn(api, 'initSession').mockImplementation(() => new Promise((resolve) => { finishSession = resolve; }));
+    render(<App />);
+    expect(api.getJobs).not.toHaveBeenCalled();
+    finishSession({ workspace_id: 'isolated-workbench', authenticated: true, expires_at: '2026-10-12T00:00:00Z' });
+    await waitFor(() => expect(api.getJobs).toHaveBeenCalledTimes(1));
+  });
+
+  it('retries the original payload and key after an uncertain network failure', async () => {
+    const save = vi.spyOn(api, 'addTechnicianNote')
+      .mockRejectedValueOnce(new TypeError('Connection interrupted'))
+      .mockResolvedValueOnce({ job: { ...mockJob, version: 2, current_state: 'diagnosis' } });
+    render(<App />);
+    const button = await screen.findByText('Save Diagnosis & Proceed to Parts');
+    fireEvent.submit(button.closest('form')!);
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    await screen.findByText(/Retry sends the original saved request/);
+    fireEvent.submit(button.closest('form')!);
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+    expect(save.mock.calls[1]).toEqual(save.mock.calls[0]);
+    expect(save.mock.calls[0][1].idempotency_key).toBeTruthy();
   });
 
   it('shows human gate alert when job is at estimate_pending state', async () => {
@@ -184,11 +220,66 @@ describe('Benchbook Frontend Workflow Tests', () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText('DB: SQLite (WAL)')).toBeInTheDocument();
+      expect(screen.getByText('DB: SQLite')).toBeInTheDocument();
       expect(screen.getByText('Milestone M2')).toBeInTheDocument();
     });
 
     const lockIcons = screen.getAllByTitle('Human Approval Gate: Cannot be completed by assistant');
     expect(lockIcons.length).toBe(3);
+  });
+
+  it('renders workbench session badge and canonical strands advisory with truthful provenance', async () => {
+    const partsJob: Job = { ...mockJob, current_state: 'diagnosis', version: 2 };
+    const partsDetails: JobDetails = { ...mockDetails, job: partsJob };
+
+    vi.spyOn(api, 'getJobs').mockResolvedValue({ jobs: [partsJob], count: 1 });
+    vi.spyOn(api, 'getJobDetails').mockResolvedValue(partsDetails);
+    const adviceSpy = vi.spyOn(api, 'getJobAdvice').mockResolvedValue({
+      job_id: 'test-uuid-101',
+      source_version: 2,
+      operation: 'parts',
+      summary: 'Motor bearing wear observed. Recommend 608ZZ replacement.',
+      suggested_parts: [
+        {
+          part_id: 'FAN-BRG-608ZZ',
+          part_name: 'Deep Groove Ball Bearing 608ZZ',
+          unit_cost_inr: 120,
+          availability: 'Sample / Unverified',
+          supplier: 'Synthetic supplier', rationale: 'Matches hum symptoms on speed 2.',
+        },
+      ],
+      provenance: {
+        engine: 'strands',
+        provider: 'groq',
+        model: 'openai/gpt-oss-20b',
+        reservation_id: 'res_mock_123',
+        generated_at: new Date().toISOString(),
+        actual_sends: 2,
+        actual_tools: 1,
+        latency_ms: 350,
+        advisory_only: true,
+        requires_human_verification: true,
+      },
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Workbench:/)).toBeInTheDocument();
+      expect(screen.getByText(/ws_test_/)).toBeInTheDocument();
+      expect(screen.getByText(/\(1\/50 jobs\)/)).toBeInTheDocument();
+    });
+
+    const askBtn = await screen.findByText('🤖 Ask Assistant for Parts Suggestions');
+    fireEvent.click(askBtn);
+
+    await waitFor(() => {
+      expect(adviceSpy).toHaveBeenCalled();
+      expect(screen.getByText(/Deep Groove Ball Bearing 608ZZ/)).toBeInTheDocument();
+      expect(screen.getByText(/FAN-BRG-608ZZ/)).toBeInTheDocument();
+      expect(screen.getByText(/Provider:/)).toBeInTheDocument();
+      expect(screen.getByText('groq')).toBeInTheDocument();
+      expect(screen.getByText('openai/gpt-oss-20b')).toBeInTheDocument();
+    });
   });
 });

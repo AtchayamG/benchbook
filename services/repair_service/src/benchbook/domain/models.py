@@ -46,6 +46,7 @@ class Job(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     job_id: str
+    workspace_id: str = "legacy_local_workspace"
     job_number: str
     customer_name: str
     customer_phone: str
@@ -210,6 +211,7 @@ class AuditEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     event_id: str
+    workspace_id: str = "legacy_local_workspace"
     job_id: str
     from_state: str
     to_state: str
@@ -221,3 +223,79 @@ class AuditEvent(BaseModel):
     version_after: int
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: str
+
+
+class Workspace(BaseModel):
+    """Represents an isolated public or local repair shop workbench."""
+
+    model_config = ConfigDict(frozen=True)
+
+    workspace_id: str
+    created_at: str
+    expires_at: str
+    last_active_at: str
+
+
+class SessionToken(BaseModel):
+    """Hashed session token authenticating a workbench session."""
+
+    model_config = ConfigDict(frozen=True)
+
+    token_hash: str
+    workspace_id: str
+    created_at: str
+    expires_at: str
+
+
+class SessionStatus(BaseModel):
+    """Public session status response."""
+
+    model_config = ConfigDict(frozen=True)
+
+    authenticated: bool
+    workspace_id: str | None = None
+    created_at: str | None = None
+    expires_at: str | None = None
+    job_count: int = 0
+    job_capacity: int = 50
+
+
+class AdviceProvenance(BaseModel):
+    """Truthful runtime provenance of advisory generation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    engine: str = "strands"
+    provider: str = "groq"
+    model: str = "openai/gpt-oss-20b"
+    actual_sends: int
+    actual_tools: int
+    generated_at: str
+    latency_ms: int
+
+
+class PartSuggestion(BaseModel):
+    """Grounding part suggestion matching the stable synthetic parts catalogue."""
+
+    model_config = ConfigDict(frozen=True)
+
+    part_id: str
+    part_name: str
+    unit_cost_inr: float
+    availability: str = "Sample / Unverified"
+    supplier: str = "Synthetic Regional Supplier"
+    rationale: str
+
+
+class AdviceResponse(BaseModel):
+    """Structured advisory result for parts, estimate, or pickup."""
+
+    model_config = ConfigDict(frozen=True)
+
+    job_id: str
+    source_version: int
+    operation: str  # parts, estimate, pickup
+    summary: str
+    suggested_parts: list[PartSuggestion] = Field(default_factory=list)
+    draft_message: str | None = None
+    provenance: AdviceProvenance

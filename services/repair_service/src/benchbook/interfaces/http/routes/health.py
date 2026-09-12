@@ -17,7 +17,9 @@ def get_store(request: Request) -> SqliteRepairJobStore:
 
 
 @router.get("/health")
-def health_check(store: SqliteRepairJobStore = Depends(get_store)) -> dict[str, Any]:
+def health_check(
+    request: Request, store: SqliteRepairJobStore = Depends(get_store)
+) -> dict[str, Any]:
     """Return service health, database status, shop identity, and assistant status."""
     db_connected = store.ping()
     return {
@@ -36,18 +38,24 @@ def health_check(store: SqliteRepairJobStore = Depends(get_store)) -> dict[str, 
             "phone": settings.shop_phone,
         },
         "assistant": {
-            "mode": settings.assistant_mode,
+            "mode": request.app.state.assistant_mode,
             "role": "advisory_only",
-            "provider": "offline_rules",
-            "live_calls": False,
+            "provider": "groq" if request.app.state.assistant_mode == "live" else "offline_rules",
+            "live_calls": request.app.state.assistant_mode == "live",
             "human_approval_required": True,
         },
     }
 
 
 @router.get("/ready")
-def readiness_check(store: SqliteRepairJobStore = Depends(get_store)) -> dict[str, Any]:
+def readiness_check(
+    request: Request, store: SqliteRepairJobStore = Depends(get_store)
+) -> dict[str, Any]:
     """Readiness probe for container orchestrators and deployment platforms."""
+    if not request.app.state.inference_configured:
+        raise HTTPException(
+            status_code=503, detail={"status": "not_ready", "assistant": "missing_credentials"}
+        )
     if not store.ping():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

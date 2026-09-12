@@ -36,10 +36,18 @@ class StateConflictError(BenchbookError):
     """Raised when an optimistic concurrency check fails (version mismatch)."""
 
     def __init__(
-        self, expected_version: int, current_version: int, current_job: Any = None
+        self,
+        expected_version: int,
+        current_version: int,
+        current_job: Any = None,
+        message: str | None = None,
     ) -> None:
+        msg = (
+            message
+            or f"State conflict: expected version {expected_version}, but current version is {current_version}."
+        )
         super().__init__(
-            f"State conflict: expected version {expected_version}, but current version is {current_version}.",
+            msg,
             {
                 "expected_version": expected_version,
                 "current_version": current_version,
@@ -94,3 +102,23 @@ class AssistantUnavailableError(AssistantError):
 
 class AssistantInvalidOutputError(AssistantError):
     """Assistant produced ungrounded or unparseable output."""
+
+
+class CapacityExceededError(BenchbookError):
+    """Raised when a workspace or global capacity/rate limit ceiling is exceeded."""
+
+
+class SessionExpiredError(BenchbookError):
+    """Raised when a workbench session token is invalid, missing, or expired."""
+
+
+class WorkspaceNotFoundError(BenchbookError):
+    """Raised when a requested workspace does not exist or has expired."""
+
+
+class OriginRefusedError(BenchbookError):
+    """Raised when an Origin header fails closed in production."""
+
+
+class IneligibleAdviceError(BenchbookError):
+    """Raised when a job state is not eligible for the requested advisory operation."""

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header
 
 from benchbook.domain.models import (
     ActorType,
@@ -22,6 +22,10 @@ from benchbook.domain.models import (
     TechnicianNote,
 )
 from benchbook.infrastructure.sqlite_store import SqliteRepairJobStore
+from benchbook.interfaces.http.dependencies import (
+    get_current_workspace_id,
+    get_store,
+)
 from benchbook.interfaces.http.schemas import (
     AddPartsLookupRequest,
     AddTechnicianNoteRequest,
@@ -43,16 +47,13 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def get_store(request: Request) -> SqliteRepairJobStore:
-    return cast(SqliteRepairJobStore, request.app.state.store)
-
-
 @router.post("/technician-note")
 def add_technician_note(
     job_id: str,
     payload: AddTechnicianNoteRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     store: SqliteRepairJobStore = Depends(get_store),
+    workspace_id: str = Depends(get_current_workspace_id),
 ) -> dict[str, Any]:
     """Record technician diagnosis and findings (advances state to diagnosis)."""
     effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
@@ -74,6 +75,7 @@ def add_technician_note(
         actor_name=payload.technician_name,
         idempotency_key=effective_idempotency,
         payload=payload,
+        workspace_id=workspace_id,
     )
 
     return {
@@ -88,6 +90,7 @@ def add_parts_lookup(
     payload: AddPartsLookupRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     store: SqliteRepairJobStore = Depends(get_store),
+    workspace_id: str = Depends(get_current_workspace_id),
 ) -> dict[str, Any]:
     """Record parts required or suggested for the repair."""
     effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
@@ -118,6 +121,7 @@ def add_parts_lookup(
         actor_name=payload.actor_name,
         idempotency_key=effective_idempotency,
         payload=payload,
+        workspace_id=workspace_id,
     )
 
     return {
@@ -132,6 +136,7 @@ def create_estimate(
     payload: CreateEstimateRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     store: SqliteRepairJobStore = Depends(get_store),
+    workspace_id: str = Depends(get_current_workspace_id),
 ) -> dict[str, Any]:
     """Generate repair cost estimate (advances state to estimate_pending)."""
     effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
@@ -155,6 +160,7 @@ def create_estimate(
         actor_name=payload.created_by,
         idempotency_key=effective_idempotency,
         payload=payload,
+        workspace_id=workspace_id,
     )
 
     return {
@@ -169,6 +175,7 @@ def record_customer_approval(
     payload: CustomerApprovalRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     store: SqliteRepairJobStore = Depends(get_store),
+    workspace_id: str = Depends(get_current_workspace_id),
 ) -> dict[str, Any]:
     """Record customer approval or decline. STRICT HUMAN GATE: Assistant cannot execute."""
     effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
@@ -194,6 +201,7 @@ def record_customer_approval(
         actor_name=payload.recorded_by_technician,
         idempotency_key=effective_idempotency,
         payload=payload,
+        workspace_id=workspace_id,
     )
 
     return {
@@ -208,6 +216,7 @@ def update_supplier_status(
     payload: SupplierStatusRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     store: SqliteRepairJobStore = Depends(get_store),
+    workspace_id: str = Depends(get_current_workspace_id),
 ) -> dict[str, Any]:
     """Update supplier order status for required repair parts."""
     effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
@@ -229,6 +238,7 @@ def update_supplier_status(
         actor_name=payload.actor_name,
         idempotency_key=effective_idempotency,
         payload=payload,
+        workspace_id=workspace_id,
     )
 
     return {
@@ -243,6 +253,7 @@ def transition_repair_queue(
     payload: RepairQueueTransitionRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     store: SqliteRepairJobStore = Depends(get_store),
+    workspace_id: str = Depends(get_current_workspace_id),
 ) -> dict[str, Any]:
     """Transition job to repair_queue or start repair_in_progress."""
     effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
@@ -255,6 +266,7 @@ def transition_repair_queue(
         actor_name=payload.actor_name,
         idempotency_key=effective_idempotency,
         payload=payload,
+        workspace_id=workspace_id,
     )
 
     return {"job": updated_job.model_dump()}
@@ -266,6 +278,7 @@ def record_repair_completion(
     payload: RepairCompletionRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     store: SqliteRepairJobStore = Depends(get_store),
+    workspace_id: str = Depends(get_current_workspace_id),
 ) -> dict[str, Any]:
     """Sign off repair completion and QC tests. STRICT HUMAN GATE: Assistant cannot execute."""
     effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
@@ -291,6 +304,7 @@ def record_repair_completion(
         actor_name=payload.technician_name,
         idempotency_key=effective_idempotency,
         payload=payload,
+        workspace_id=workspace_id,
     )
 
     return {
@@ -305,6 +319,7 @@ def record_pickup_notification(
     payload: PickupNotificationRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     store: SqliteRepairJobStore = Depends(get_store),
+    workspace_id: str = Depends(get_current_workspace_id),
 ) -> dict[str, Any]:
     """Log pickup notification sent to customer (advances state to ready_for_pickup)."""
     effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
@@ -325,6 +340,7 @@ def record_pickup_notification(
         actor_name=payload.sent_by_technician,
         idempotency_key=effective_idempotency,
         payload=payload,
+        workspace_id=workspace_id,
     )
 
     return {
@@ -339,6 +355,7 @@ def record_follow_up(
     payload: FollowUpRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     store: SqliteRepairJobStore = Depends(get_store),
+    workspace_id: str = Depends(get_current_workspace_id),
 ) -> dict[str, Any]:
     """Record customer device handover, payment receipt, and warranty terms."""
     effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
@@ -363,6 +380,7 @@ def record_follow_up(
         actor_name=payload.recorded_by,
         idempotency_key=effective_idempotency,
         payload=payload,
+        workspace_id=workspace_id,
     )
 
     return {
@@ -377,6 +395,7 @@ def record_job_close(
     payload: JobCloseRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     store: SqliteRepairJobStore = Depends(get_store),
+    workspace_id: str = Depends(get_current_workspace_id),
 ) -> dict[str, Any]:
     """Final closure of the repair job. STRICT HUMAN GATE: Assistant cannot execute."""
     effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
@@ -398,6 +417,7 @@ def record_job_close(
         actor_name=payload.closed_by,
         idempotency_key=effective_idempotency,
         payload=payload,
+        workspace_id=workspace_id,
     )
 
     return {

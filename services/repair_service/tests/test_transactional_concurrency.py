@@ -382,7 +382,7 @@ def test_durability_reconnect_postgres(pg_db_url: str) -> None:
     _run_durability_test(pg_db_url)
 
 
-class ReplaySmokeClient(SmokeClient):
+class ReplaySmokeClient(SmokeClient):  # type: ignore[misc]
     """Exercise every successful workflow POST twice, requiring an exact replay."""
 
     def post(self, path: str, json: Any = None, headers: dict[str, str] | None = None) -> Any:

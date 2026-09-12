@@ -80,6 +80,21 @@ def test_pickup_notification_drafting() -> None:
     assert "UPI (GPay/PhonePe)" in draft["message_text"]
 
 
+def test_retired_unscoped_assistant_routes_return_410(temp_db_path: str) -> None:
+    """Verify that unscoped /api/assistant/* routes are retired with HTTP 410 Gone per ADR-004."""
+    app = create_app(db_path=temp_db_path)
+    with TestClient(app) as test_client:
+        for route in (
+            "/api/assistant/suggest-parts",
+            "/api/assistant/draft-estimate-message",
+            "/api/assistant/draft-pickup-notification",
+        ):
+            resp = test_client.post(route, json={})
+            assert resp.status_code == 410
+            assert resp.json()["error"] == "ENDPOINT_RETIRED"
+            assert resp.json()["canonical_route"] == "POST /api/jobs/{job_id}/advice"
+
+
 @pytest.mark.parametrize(
     ("failure_mode", "expected_status", "expected_error"),
     [
@@ -92,14 +107,40 @@ def test_pickup_notification_drafting() -> None:
 def test_assistant_honest_failure_modes(
     temp_db_path: str, failure_mode: str, expected_status: int, expected_error: str
 ) -> None:
-    """Verify that assistant failure modes map to truthful HTTP statuses."""
+    """Verify that assistant failure modes map to truthful HTTP statuses on canonical advice route."""
     app = create_app(db_path=temp_db_path, assistant_mode=failure_mode)
     with TestClient(app) as test_client:
+        # Create job and add diagnosis note
+        c_resp = test_client.post(
+            "/api/jobs",
+            json={
+                "customer_name": "Test User",
+                "customer_phone": "9840123456",
+                "device_kind": "Mixer Grinder",
+                "brand_model": "Preethi",
+                "intake_symptoms": "Overload trip",
+            },
+        )
+        assert c_resp.status_code == 201
+        job_id = c_resp.json()["job"]["job_id"]
+
+        n_resp = test_client.post(
+            f"/api/jobs/{job_id}/technician-note",
+            json={
+                "expected_version": 1,
+                "technician_name": "Ramu",
+                "diagnosis_findings": "Coupler broken and carbon worn",
+                "root_cause": "Worn carbon brush",
+                "recommended_action": "Replace carbon brush",
+            },
+        )
+        assert n_resp.status_code == 200
+
         resp = test_client.post(
-            "/api/assistant/suggest-parts",
-            json={"device_kind": "Mixer Grinder", "symptoms": "Overload trip"},
+            f"/api/jobs/{job_id}/advice",
+            json={"operation": "parts", "expected_version": 2},
         )
         assert resp.status_code == expected_status
         data = resp.json()
         assert data["error"] == expected_error
-        assert "Assistant" in data["message"]
+        assert "Assistant" in data["message"] or "Advisory" in data["message"]

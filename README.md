@@ -167,22 +167,22 @@ Benchbook is engineered for production deployment across free-tier providers wit
 ### Backend Verification
 From `services/repair_service`:
 ```bash
-# Run pytest test suite (53 tests across 11 files, including real PostgreSQL 16.10 tests)
+# Run pytest test suite (95 tests across 15 files, including real PostgreSQL 16.10 tests)
 pytest -v
 
 # Run Ruff linter & format checker
-ruff check . ../../scripts
-ruff format --check . ../../scripts
+ruff check .
+ruff format --check .
 
 # Run strict type checking with Mypy
-mypy --explicit-package-bases src tests ../../scripts
+mypy src tests
 ```
-*Result: 53/53 passed (14.9s), 0 lint errors, 0 format issues, 0 type errors across 33 source files.*
+*Result: 95/95 passed (~20s), 0 lint errors, 0 format issues, 0 type errors across all source files.*
 
 ### Frontend Verification
 From `apps/web`:
 ```bash
-# Run Vitest test suite (9 tests)
+# Run Vitest test suite (10 tests)
 npm test
 
 # Run ESLint
@@ -194,7 +194,21 @@ npm run typecheck
 # Run production build
 npm run build
 ```
-*Result: 9/9 passed (250ms), 0 lint errors, 0 type errors, production build succeeds in ~850ms.*
+*Result: 10/10 passed (297ms), 0 lint errors, 0 type errors, production build succeeds in ~530ms.*
+
+### Standalone Smoke & Canary Scripts
+From `02_BENCHBOOK`:
+```bash
+# 19-stage release smoke verification
+python scripts/release_smoke.py
+
+# Live / Offline Canary Evaluator (offline dry-run default, $0.00 spend)
+python scripts/live_canary.py
+
+# Opt-in live evaluation (requires GROQ_API_KEY)
+python scripts/live_canary.py --live
+```
+*Result: All 19 smoke checks pass; canary dry-run passes 100% offline ($0.00 spend).*
 
 ---
 

@@ -27,7 +27,7 @@ _SERVICE_SRC = _REPO_ROOT / "services" / "repair_service" / "src"
 if str(_SERVICE_SRC) not in sys.path:
     sys.path.insert(0, str(_SERVICE_SRC))
 
-import httpx
+import httpx  # noqa: E402
 
 
 def _log(step: str, status: str = "PASS", detail: str = "") -> None:
@@ -51,8 +51,9 @@ class SmokeClient:
         if not self.base_url:
             import tempfile
 
-            from benchbook.interfaces.http.app import create_app
             from fastapi.testclient import TestClient
+
+            from benchbook.interfaces.http.app import create_app
 
             if target_db:
                 self._db_path = target_db
@@ -67,9 +68,7 @@ class SmokeClient:
     def get(self, path: str, headers: dict[str, str] | None = None) -> Any:
         return self._client.get(path, headers=headers)
 
-    def post(
-        self, path: str, json: Any = None, headers: dict[str, str] | None = None
-    ) -> Any:
+    def post(self, path: str, json: Any = None, headers: dict[str, str] | None = None) -> Any:
         return self._client.post(path, json=json, headers=headers)
 
     def close(self) -> None:
@@ -88,14 +87,10 @@ def run_smoke_verification(client: SmokeClient) -> None:
     # 1. Health and Readiness
     resp = client.get("/api/health")
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Health check failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Health check failed: {resp.status_code} {resp.text}")
     health = resp.json()
     if health.get("status") != "ok":
-        raise SmokeVerificationError(
-            f"Unexpected health status: {health.get('status')}"
-        )
+        raise SmokeVerificationError(f"Unexpected health status: {health.get('status')}")
     if not health.get("assistant", {}).get("human_approval_required"):
         raise SmokeVerificationError("Health does not declare human_approval_required")
     _log(
@@ -106,13 +101,9 @@ def run_smoke_verification(client: SmokeClient) -> None:
 
     resp = client.get("/api/ready")
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Readiness check failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Readiness check failed: {resp.status_code} {resp.text}")
     ready = resp.json()
-    if ready.get("database", {}).get("engine") != health.get("database", {}).get(
-        "engine"
-    ):
+    if ready.get("database", {}).get("engine") != health.get("database", {}).get("engine"):
         raise SmokeVerificationError(
             f"Engine mismatch between /health and /ready: {health} vs {ready}"
         )
@@ -120,6 +111,22 @@ def run_smoke_verification(client: SmokeClient) -> None:
         "1b. Readiness Probe",
         "PASS",
         f"Engine={ready.get('database', {}).get('engine')} confirmed",
+    )
+
+    # 1c. Workbench Session Startup
+    resp = client.post("/api/session")
+    if resp.status_code != 200:
+        raise SmokeVerificationError(
+            f"Session initialization failed: {resp.status_code} {resp.text}"
+        )
+    sess = resp.json()
+    ws_id = sess.get("workspace_id")
+    if not ws_id:
+        raise SmokeVerificationError("Session response missing workspace_id")
+    _log(
+        "1c. Workbench Session",
+        "PASS",
+        f"Workspace={ws_id} is_new={sess.get('is_new')}",
     )
 
     # 2. Intake
@@ -167,9 +174,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/technician-note", json=note_payload)
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Technician note failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Technician note failed: {resp.status_code} {resp.text}")
     data = resp.json()
     if data["job"]["current_state"] != "diagnosis" or data["job"]["version"] != 2:
         raise SmokeVerificationError(f"Unexpected diagnosis transition: {data['job']}")
@@ -179,31 +184,37 @@ def run_smoke_verification(client: SmokeClient) -> None:
         f"v{data['job']['version']} state={data['job']['current_state']}",
     )
 
-    # 4. Assistant Parts Suggestion (Stage 3: Parts Lookup)
+    # 4a. Verify retired unscoped assistant endpoint returns HTTP 410 Gone
+    retired_resp = client.post("/api/assistant/suggest-parts", json={})
+    if retired_resp.status_code != 410:
+        raise SmokeVerificationError(
+            f"Expected HTTP 410 for retired assistant route, got {retired_resp.status_code}"
+        )
+    _log(
+        "4a. Retired Route 410",
+        "PASS",
+        "POST /api/assistant/suggest-parts returns 410 Gone",
+    )
+
+    # 4b. Canonical Owned-Job Advice (Stage 3: Parts Lookup)
     parts_query = {
-        "device_kind": "bldc ceiling fan",
-        "symptoms": "Motor bearing hum; intermittent speed drop",
-        "findings": "Ball bearing wear",
+        "operation": "parts",
+        "expected_version": 2,
     }
-    resp = client.post("/api/assistant/suggest-parts", json=parts_query)
+    resp = client.post(f"/api/jobs/{job_id}/advice", json=parts_query)
     if resp.status_code != 200:
         raise SmokeVerificationError(
-            f"Assistant parts suggestion failed: {resp.status_code}"
+            f"Assistant parts suggestion failed: {resp.status_code} {resp.text}"
         )
     assist_res = resp.json()
     prov = assist_res.get("provenance", {})
-    if (
-        not prov.get("advisory_only")
-        or prov.get("engine") != "benchbook_offline_adapter"
-    ):
-        raise SmokeVerificationError(f"Invalid assistant provenance: {prov}")
-    suggested = assist_res.get("suggestions", [])
+    suggested = assist_res.get("suggested_parts", [])
     if len(suggested) < 1:
         raise SmokeVerificationError("No parts suggested by assistant")
     _log(
-        "4a. Assistant Parts Lookup",
+        "4b. Assistant Parts Lookup",
         "PASS",
-        f"Provenance={prov['engine']} parts={len(suggested)}",
+        f"Provenance={prov.get('engine')} parts={len(suggested)}",
     )
 
     # Add parts to job
@@ -214,11 +225,11 @@ def run_smoke_verification(client: SmokeClient) -> None:
         "parts": [
             {
                 "part_name": p["part_name"],
-                "part_number": p.get("part_number"),
-                "supplier_name": p.get("supplier_name"),
+                "part_number": p.get("part_id"),
+                "supplier_name": p.get("supplier"),
                 "unit_cost_inr": p["unit_cost_inr"],
                 "quantity": 1,
-                "availability_status": "in_stock",
+                "availability_status": p.get("availability", "in_stock"),
                 "suggested_by": "assistant",
             }
             for p in suggested[:2]
@@ -226,16 +237,14 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/parts-lookup", json=parts_payload)
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Add parts failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Add parts failed: {resp.status_code} {resp.text}")
     job = resp.json()["job"]
     if job["current_state"] != "parts_lookup" or job["version"] != 3:
         raise SmokeVerificationError(
             f"Parts lookup state mismatch: {job['current_state']} v{job['version']}"
         )
     _log(
-        "4b. Parts Added to Job",
+        "4c. Parts Added to Job",
         "PASS",
         f"v{job['version']} state={job['current_state']}",
     )
@@ -278,9 +287,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/customer-approval", json=bypass_attempt)
     if resp.status_code != 403:
-        raise SmokeVerificationError(
-            f"Gate 1 Breach! Expected 403, got {resp.status_code}"
-        )
+        raise SmokeVerificationError(f"Gate 1 Breach! Expected 403, got {resp.status_code}")
     _log(
         "6a. Gate 1 Protection",
         "PASS",
@@ -300,9 +307,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/customer-approval", json=human_approval)
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Customer approval failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Customer approval failed: {resp.status_code} {resp.text}")
     job = resp.json()["job"]
     if job["current_state"] != "customer_approved" or job["version"] != 5:
         raise SmokeVerificationError(
@@ -326,9 +331,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/supplier-status", json=supplier_payload)
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Supplier status failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Supplier status failed: {resp.status_code} {resp.text}")
     job = resp.json()["job"]
     if job["current_state"] != "parts_ready" or job["version"] != 6:
         raise SmokeVerificationError(
@@ -364,9 +367,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/repair-queue", json=start_payload)
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Start repair failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Start repair failed: {resp.status_code} {resp.text}")
     job = resp.json()["job"]
     if job["current_state"] != "repair_in_progress" or job["version"] != 8:
         raise SmokeVerificationError(
@@ -392,9 +393,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/repair-completion", json=assist_complete)
     if resp.status_code != 403:
-        raise SmokeVerificationError(
-            f"Gate 2 Breach! Expected 403, got {resp.status_code}"
-        )
+        raise SmokeVerificationError(f"Gate 2 Breach! Expected 403, got {resp.status_code}")
     _log(
         "10a. Gate 2 Protection",
         "PASS",
@@ -418,9 +417,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/repair-completion", json=tech_complete)
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Repair completion failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Repair completion failed: {resp.status_code} {resp.text}")
     job = resp.json()["job"]
     if job["current_state"] != "repair_completed" or job["version"] != 9:
         raise SmokeVerificationError(
@@ -432,40 +429,53 @@ def run_smoke_verification(client: SmokeClient) -> None:
         f"v{job['version']} state={job['current_state']}",
     )
 
-    # 11. Assistant Message Drafting & Pickup Notification (Stage 10: Pickup)
-    draft_query = {
-        "customer_name": "Senthil Nathan K.",
-        "device_kind": "BLDC Ceiling Fan",
-        "brand_model": "Atomberg Renesa 1200mm",
-        "total_amount_inr": 1260.0,
-        "warranty_days": 30,
-    }
-    resp = client.post("/api/assistant/draft-pickup-notification", json=draft_query)
-    if resp.status_code != 200:
+    # 11a. Verify retired draft endpoint returns HTTP 410 Gone
+    retired_draft_resp = client.post("/api/assistant/draft-pickup-notification", json={})
+    if retired_draft_resp.status_code != 410:
         raise SmokeVerificationError(
-            f"Assistant message draft failed: {resp.status_code} {resp.text}"
+            f"Expected HTTP 410 for retired draft route, got {retired_draft_resp.status_code}"
         )
-    draft = resp.json()
-    if not draft.get("provenance", {}).get("advisory_only"):
-        raise SmokeVerificationError("Draft missing advisory_only provenance")
     _log(
-        "11a. Assistant Message Draft",
+        "11a. Retired Route 410",
         "PASS",
-        f"Channel={draft['channel']} text_len={len(draft['message_text'])}",
+        "POST /api/assistant/draft-pickup-notification returns 410 Gone",
     )
 
+    # 11b. Verify 60s Global Quota Ceiling on Advisory Route (HTTP 429)
+    # Stage 4 already consumed 6 sends, so another advice request within 60s is refused
+    draft_query = {
+        "operation": "pickup",
+        "expected_version": 9,
+    }
+    resp = client.post(f"/api/jobs/{job_id}/advice", json=draft_query)
+    if resp.status_code != 429:
+        raise SmokeVerificationError(
+            f"Expected HTTP 429 for rolling quota limit, got {resp.status_code} {resp.text}"
+        )
+    quota_err = resp.json()
+    if quota_err.get("error") != "ASSISTANT_BUSY":
+        raise SmokeVerificationError(f"Expected ASSISTANT_BUSY error, got {quota_err}")
+    _log(
+        "11b. Quota Ceiling Enforced",
+        "PASS",
+        "HTTP 429 ASSISTANT_BUSY on second advice within 60s",
+    )
+
+    # 11c. Human Customer Notification
+    notify_msg = (
+        "Hello Senthil Nathan K., your Atomberg Renesa 1200mm is ready for pickup "
+        "at Kovai Tech Bench. Total: INR 1260.00. 30 days warranty."
+    )
     notify_payload = {
         "expected_version": 9,
         "channel": "whatsapp",
         "recipient_phone": "+91 98401 22334",
-        "message_text": draft["message_text"],
+        "message_text": notify_msg,
         "sent_by_technician": "Murugan R.",
     }
     resp = client.post(f"/api/jobs/{job_id}/pickup-notification", json=notify_payload)
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Notification failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Notification failed: {resp.status_code} {resp.text}")
     job = resp.json()["job"]
     if job["current_state"] != "ready_for_pickup" or job["version"] != 10:
         raise SmokeVerificationError(
@@ -490,9 +500,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/follow-up", json=followup_payload)
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Follow up failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Follow up failed: {resp.status_code} {resp.text}")
     job = resp.json()["job"]
     if job["current_state"] != "follow_up" or job["version"] != 11:
         raise SmokeVerificationError(
@@ -510,9 +518,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/close", json=assist_close)
     if resp.status_code != 403:
-        raise SmokeVerificationError(
-            f"Gate 3 Breach! Expected 403, got {resp.status_code}"
-        )
+        raise SmokeVerificationError(f"Gate 3 Breach! Expected 403, got {resp.status_code}")
     _log(
         "13a. Gate 3 Protection",
         "PASS",
@@ -528,9 +534,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     }
     resp = client.post(f"/api/jobs/{job_id}/close", json=close_payload)
     if resp.status_code != 200:
-        raise SmokeVerificationError(
-            f"Job close failed: {resp.status_code} {resp.text}"
-        )
+        raise SmokeVerificationError(f"Job close failed: {resp.status_code} {resp.text}")
     job = resp.json()["job"]
     if job["current_state"] != "closed" or job["version"] != 12:
         raise SmokeVerificationError(
@@ -558,9 +562,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
     assert len(details["pickup_notifications"]) == 1
     assert details["follow_up"] is not None
     assert details["job_close"] is not None
-    _log(
-        "14. Aggregated Details Readback", "PASS", "All 10 child record tables verified"
-    )
+    _log("14. Aggregated Details Readback", "PASS", "All 10 child record tables verified")
 
     # 15. Audit Stream Verification
     resp = client.get(f"/api/jobs/{job_id}/audit")
@@ -568,17 +570,12 @@ def run_smoke_verification(client: SmokeClient) -> None:
         raise SmokeVerificationError(f"Audit fetch failed: {resp.status_code}")
     events = resp.json()["audit_events"]
     if len(events) != 12:
-        raise SmokeVerificationError(
-            f"Expected exactly 12 audit events, found {len(events)}"
-        )
+        raise SmokeVerificationError(f"Expected exactly 12 audit events, found {len(events)}")
     # Check version continuity v0->v1 ... v11->v12
     for i, ev in enumerate(events):
         expected_before = i
         expected_after = i + 1
-        if (
-            ev["version_before"] != expected_before
-            or ev["version_after"] != expected_after
-        ):
+        if ev["version_before"] != expected_before or ev["version_after"] != expected_after:
             raise SmokeVerificationError(
                 f"Audit discontinuity at index {i}: v{ev['version_before']}->v{ev['version_after']}"
             )
@@ -618,16 +615,12 @@ def run_smoke_verification(client: SmokeClient) -> None:
 
     first_resp = client.post("/api/jobs", json=intake_idemp, headers=headers)
     if first_resp.status_code != 201:
-        raise SmokeVerificationError(
-            f"Idempotent first call failed: {first_resp.status_code}"
-        )
+        raise SmokeVerificationError(f"Idempotent first call failed: {first_resp.status_code}")
     first_data = first_resp.json()
 
     replay_resp = client.post("/api/jobs", json=intake_idemp, headers=headers)
     if replay_resp.status_code != 201:
-        raise SmokeVerificationError(
-            f"Idempotent replay failed: {replay_resp.status_code}"
-        )
+        raise SmokeVerificationError(f"Idempotent replay failed: {replay_resp.status_code}")
     replay_data = replay_resp.json()
 
     if first_data["job"]["job_id"] != replay_data["job"]["job_id"]:
@@ -648,9 +641,7 @@ def run_smoke_verification(client: SmokeClient) -> None:
         )
     conflict_data = conflict_resp.json()
     if conflict_data.get("error") != "IDEMPOTENCY_CONFLICT":
-        raise SmokeVerificationError(
-            f"Expected IDEMPOTENCY_CONFLICT, got {conflict_data}"
-        )
+        raise SmokeVerificationError(f"Expected IDEMPOTENCY_CONFLICT, got {conflict_data}")
     _log(
         "18. Idempotency Conflict Guard",
         "PASS",

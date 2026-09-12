@@ -9,6 +9,63 @@ from urllib.parse import urlsplit
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+KNOWN_PRODUCTION_ENVIRONMENTS = {"production", "prod"}
+KNOWN_LOCAL_ENVIRONMENTS = {"local", "development", "dev", "test", "testing"}
+SUPPORTED_ENVIRONMENTS = KNOWN_PRODUCTION_ENVIRONMENTS | KNOWN_LOCAL_ENVIRONMENTS
+
+VALID_ASSISTANT_MODES = {
+    "deterministic",
+    "live",
+    "timeout",
+    "busy",
+    "unavailable",
+    "invalid_output",
+}
+
+
+def normalize_environment(env: str | None) -> str:
+    """Normalize environment string to canonical form: 'production', 'local', or 'test'.
+
+    Unknown or unsupported modes fail closed by raising ValueError.
+    """
+    if not env:
+        return "local"
+    cleaned = env.strip().lower()
+    if cleaned in KNOWN_PRODUCTION_ENVIRONMENTS:
+        return "production"
+    if cleaned in ("test", "testing"):
+        return "test"
+    if cleaned in ("local", "development", "dev"):
+        return "local"
+    raise ValueError(
+        f"Unknown or unsupported environment: {env!r}. Supported: {sorted(SUPPORTED_ENVIRONMENTS)}"
+    )
+
+
+def is_production_environment(env: str | None) -> bool:
+    """Single production predicate for origin/auth/cookie/config checks.
+
+    Normalizes aliases ('prod', 'Production'). Fails closed on unknown modes.
+    """
+    return normalize_environment(env) == "production"
+
+
+def normalize_assistant_mode(mode: str | None) -> str:
+    """Normalize assistant mode to canonical vocabulary.
+
+    Accepts 'strands' as alias for 'live'.
+    """
+    if not mode:
+        return "deterministic"
+    cleaned = mode.strip().lower()
+    if cleaned in ("live", "strands"):
+        return "live"
+    if cleaned in VALID_ASSISTANT_MODES:
+        return cleaned
+    raise ValueError(
+        f"Unknown or unsupported assistant mode: {mode!r}. Allowed: {sorted(VALID_ASSISTANT_MODES)}"
+    )
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment or defaults."""
@@ -17,6 +74,7 @@ class Settings(BaseSettings):
         env_prefix="BENCHBOOK_",
         env_file=".env",
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_name: str = "Benchbook"
@@ -48,6 +106,24 @@ class Settings(BaseSettings):
         ],
         validation_alias=AliasChoices("BENCHBOOK_CORS_ORIGINS", "CORS_ORIGINS"),
     )
+    groq_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GROQ_API_KEY", "BENCHBOOK_GROQ_API_KEY"),
+    )
+    groq_model_id: str = Field(
+        default="openai/gpt-oss-20b",
+        validation_alias=AliasChoices("GROQ_MODEL_ID", "BENCHBOOK_GROQ_MODEL_ID"),
+    )
+
+    @field_validator("environment")
+    @classmethod
+    def validate_environment(cls, v: str) -> str:
+        return normalize_environment(v)
+
+    @field_validator("assistant_mode")
+    @classmethod
+    def validate_assistant_mode(cls, v: str) -> str:
+        return normalize_assistant_mode(v)
 
     @field_validator("database_url")
     @classmethod
@@ -64,7 +140,7 @@ class Settings(BaseSettings):
         1. No silent SQLite fallback: must be valid postgresql:// URL.
         2. Production CORS origins cannot be empty or restricted to localhost/127.0.0.1.
         """
-        if self.environment.lower() in ("production", "prod"):
+        if self.is_production:
             if (
                 not (
                     self.database_url.startswith("postgresql://")
@@ -115,6 +191,11 @@ class Settings(BaseSettings):
         if isinstance(v, (list, tuple)):
             return [str(x).strip() for x in v if str(x).strip()]
         return []
+
+    @property
+    def is_production(self) -> bool:
+        """Return True if running in production mode."""
+        return is_production_environment(self.environment)
 
     @property
     def is_postgres(self) -> bool:

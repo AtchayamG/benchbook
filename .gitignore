@@ -30,6 +30,8 @@ ENV/
 htmlcov/
 test-results/
 .pgtest/
+.playwright-cli/
+output/playwright/review-url.txt
 
 # Node / Web
 node_modules/

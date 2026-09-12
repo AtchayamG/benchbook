@@ -1,14 +1,18 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api/client';
 import { JobDetailPanel } from './components/JobDetailPanel';
 import { JobIntakeModal } from './components/JobIntakeModal';
 import { JobListView } from './components/JobListView';
-import type { Job, JobDetails } from './types/benchbook';
+import type { Job, JobDetails, SessionResponse } from './types/benchbook';
 
 export const App: React.FC = () => {
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  const detailRequest = useRef(0);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [jobDetails, setJobDetails] = useState<JobDetails | null>(null);
+  const [session, setSession] = useState<SessionResponse | null>(null);
   const [isIntakeOpen, setIsIntakeOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [showGuide, setShowGuide] = useState(true);
@@ -17,6 +21,7 @@ export const App: React.FC = () => {
     milestone: string;
     shop: { name: string };
     database?: { engine: string; status: string };
+    assistant?: { mode: string };
   } | null>(null);
 
   const fetchJobs = useCallback(async () => {
@@ -24,31 +29,44 @@ export const App: React.FC = () => {
       setIsLoading(true);
       const res = await api.getJobs();
       setJobs(res.jobs);
-      if (res.jobs.length > 0 && !selectedJobId) {
-        setSelectedJobId(res.jobs[0].job_id);
-      }
+      setSelectedJobId((previous) => previous || res.jobs[0]?.job_id || null);
+      setConnectionError(null);
     } catch (err) {
-      console.error('Failed to fetch jobs', err);
+      setConnectionError(err instanceof Error ? err.message : 'Workbench connection unavailable.');
     } finally {
       setIsLoading(false);
     }
-  }, [selectedJobId]);
+  }, []);
 
   const fetchSelectedJob = async (jobId: string) => {
+    const requestId = ++detailRequest.current;
     try {
       const details = await api.getJobDetails(jobId);
-      setJobDetails(details);
+      if (requestId === detailRequest.current && selectedIdRef.current === jobId) setJobDetails(details);
     } catch (err) {
       console.error('Failed to fetch job details', err);
     }
   };
 
   useEffect(() => {
-    api.getHealth().then(setHealthInfo).catch(console.error);
-    fetchJobs();
+    let stopped = false;
+    api.initSession().then(async (current) => {
+      if (stopped) return;
+      setSession(current);
+      await fetchJobs();
+    }).catch((error: unknown) => {
+      if (!stopped) {
+        setConnectionError(error instanceof Error ? error.message : 'Could not start workbench.');
+        setIsLoading(false);
+      }
+    });
+    api.getHealth().then(setHealthInfo).catch(() => undefined);
+    return () => { stopped = true; };
   }, [fetchJobs]);
 
   useEffect(() => {
+    selectedIdRef.current = selectedJobId;
+    setJobDetails(null);
     if (selectedJobId) {
       fetchSelectedJob(selectedJobId);
     } else {
@@ -61,7 +79,7 @@ export const App: React.FC = () => {
       await api.seedSampleJobs();
       await fetchJobs();
     } catch (err) {
-      console.error('Failed to seed jobs', err);
+      setConnectionError(err instanceof Error ? err.message : 'Could not load sample jobs.');
     }
   };
 
@@ -74,6 +92,7 @@ export const App: React.FC = () => {
     if (selectedJobId) {
       fetchSelectedJob(selectedJobId);
     }
+    api.getSession().then(setSession).catch(console.error);
     fetchJobs();
   };
 
@@ -100,14 +119,36 @@ export const App: React.FC = () => {
             Milestone {healthInfo?.milestone || 'M1'}
           </span>
           <span style={{ fontSize: '0.75rem', backgroundColor: '#e0e7ff', color: '#3730a3', padding: '0.2rem 0.5rem', borderRadius: '4px', fontWeight: 600 }}>
-            DB: {healthInfo?.database?.engine === 'postgres' ? 'PostgreSQL (Neon)' : 'SQLite (WAL)'}
+            DB: {healthInfo?.database?.engine === 'postgres' ? 'PostgreSQL' : 'SQLite'}
           </span>
+          {session && (
+            <span
+              style={{
+                fontSize: '0.75rem',
+                backgroundColor: '#f1f5f9',
+                color: '#334155',
+                padding: '0.2rem 0.5rem',
+                borderRadius: '4px',
+                fontWeight: 600,
+                border: '1px solid #cbd5e1',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+              }}
+              title={`Workbench Workspace ID: ${session.workspace_id}\nExpires: ${session.expires_at}`}
+            >
+              🔒 <span>Workbench: <code style={{ fontSize: '0.7rem' }}>{session.workspace_id.substring(0, 8)}...</code></span>
+              <span style={{ color: jobs.length >= 50 ? '#dc2626' : '#0284c7' }}>
+                ({jobs.length}/50 jobs)
+              </span>
+            </span>
+          )}
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <span style={{ fontSize: '0.75rem', color: 'var(--slate-500)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
             <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#10b981' }}></span>
-            Assistant: Offline Rules (Advisory Only)
+            Assistant: {healthInfo?.assistant?.mode === 'live' ? 'Strands / Groq' : healthInfo?.assistant?.mode === 'deterministic' ? 'Offline catalogue' : healthInfo?.assistant?.mode === 'offline_transport_test' ? 'Offline transport test' : 'Checking availability'} (Advisory Only)
           </span>
           <button
             type="button"
@@ -119,6 +160,18 @@ export const App: React.FC = () => {
           </button>
         </div>
       </header>
+
+      {connectionError && <div role="alert" style={{ padding: '1rem', color: '#991b1b' }}>
+        {connectionError} Free hosting may need a moment to wake up.
+        <button type="button" className="btn btn-secondary" onClick={() => window.location.reload()}>Reconnect workbench</button>
+      </div>}
+      <p style={{ padding: '0.5rem 1rem', fontSize: '0.8rem' }}>Public demo: use synthetic customer details only. Messages stay as drafts; no messages are sent.</p>
+      {/* Capacity Warning Banner */}
+      {jobs.length >= 50 && (
+        <div style={{ backgroundColor: '#fef2f2', color: '#991b1b', padding: '0.5rem 1rem', fontSize: '0.8rem', borderBottom: '1px solid #fecaca', fontWeight: 600 }}>
+          ⚠️ Workspace Capacity Reached: 50 / 50 active jobs limit in this isolated workbench. This workbench has reached its storage limit.
+        </div>
+      )}
 
       {/* Evaluator & Judge Walkthrough Guide */}
       {showGuide && (
@@ -158,7 +211,7 @@ export const App: React.FC = () => {
         />
 
         {jobDetails ? (
-          <JobDetailPanel details={jobDetails} onRefresh={handleRefresh} />
+          <JobDetailPanel key={`${jobDetails.job.job_id}:${jobDetails.job.version}`} details={jobDetails} onRefresh={handleRefresh} />
         ) : (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--slate-400)' }}>
             <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📋</div>

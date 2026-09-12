@@ -1,18 +1,18 @@
-"""Benchbook SQLite Storage Implementation."""
+"""Benchbook SQLite and PostgreSQL Storage Implementation."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
 from benchbook.domain.errors import (
+    CapacityExceededError,
     IdempotencyConflictError,
     JobNotFoundError,
     StateConflictError,
-    ValidationError,
 )
 from benchbook.domain.models import (
     ActorType,
@@ -28,6 +28,7 @@ from benchbook.domain.models import (
     RepairCompletion,
     SupplierStatus,
     TechnicianNote,
+    Workspace,
 )
 from benchbook.domain.workflow import validate_transition
 from benchbook.infrastructure.database import get_db_connection, init_db
@@ -84,14 +85,20 @@ class SqliteRepairJobStore:
         except Exception:
             return False
 
-    def _lock_idempotency_key(self, conn: Any, idempotency_key: str | None) -> None:
-        """Acquire transaction-level advisory lock on PostgreSQL to serialize concurrent requests with same idempotency key."""
+    def _lock_idempotency_key(
+        self, conn: Any, idempotency_key: str | None, workspace_id: str | None = None
+    ) -> None:
+        """Acquire transaction-level advisory lock on PostgreSQL to serialize concurrent requests."""
         if self.engine_name == "postgres" and idempotency_key:
-            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (idempotency_key,))
+            lock_val = f"{workspace_id or 'legacy_local_workspace'}:{idempotency_key}"
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (lock_val,))
 
     def _row_to_job(self, row: Any) -> Job:
         return Job(
             job_id=row["job_id"],
+            workspace_id=row["workspace_id"]
+            if "workspace_id" in row.keys()  # noqa: SIM118
+            else "legacy_local_workspace",
             job_number=row["job_number"],
             customer_name=row["customer_name"],
             customer_phone=row["customer_phone"],
@@ -115,17 +122,24 @@ class SqliteRepairJobStore:
         job: Job,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> Job:
+        ws_id = workspace_id or job.workspace_id or "legacy_local_workspace"
         payload_hash = canonical_payload_hash(payload or job)
         scope = "create_job"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
+            if conn.is_postgres:
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext('ws_job_admission_' || ?))",
+                    (ws_id,),
+                )
 
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -137,17 +151,31 @@ class SqliteRepairJobStore:
                     cached = json.loads(row["response_payload"])
                     return Job.model_validate(cached["job"])
 
+            # Enforce capacity ceiling under write lock (after replay check)
+            if ws_id != "legacy_local_workspace":
+                cur_cnt = conn.execute(
+                    "SELECT COUNT(*) AS count FROM jobs WHERE workspace_id = ?",
+                    (ws_id,),
+                )
+                cnt_row = cur_cnt.fetchone()
+                current_jobs = int(cnt_row["count"]) if cnt_row else 0
+                if current_jobs >= 50:
+                    raise CapacityExceededError(
+                        f"Workspace '{ws_id}' has reached the maximum capacity of 50 jobs."
+                    )
+
             conn.execute(
                 """
                 INSERT INTO jobs (
-                    job_id, job_number, customer_name, customer_phone, customer_address,
+                    job_id, workspace_id, job_number, customer_name, customer_phone, customer_address,
                     device_kind, brand_model, serial_number, intake_symptoms, physical_condition,
                     accessories_received, promised_date, assigned_technician, current_state,
                     version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
+                    ws_id,
                     job.job_number,
                     job.customer_name,
                     job.customer_phone,
@@ -171,12 +199,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_id,
+                    ws_id,
                     job.job_id,
                     "none",
                     job.current_state.value,
@@ -191,64 +220,129 @@ class SqliteRepairJobStore:
                 ),
             )
 
+            created_job = Job(
+                job_id=job.job_id,
+                workspace_id=ws_id,
+                job_number=job.job_number,
+                customer_name=job.customer_name,
+                customer_phone=job.customer_phone,
+                customer_address=job.customer_address,
+                device_kind=job.device_kind,
+                brand_model=job.brand_model,
+                serial_number=job.serial_number,
+                intake_symptoms=job.intake_symptoms,
+                physical_condition=job.physical_condition,
+                accessories_received=job.accessories_received,
+                promised_date=job.promised_date,
+                assigned_technician=job.assigned_technician,
+                current_state=job.current_state,
+                version=job.version,
+                created_at=job.created_at,
+                updated_at=job.updated_at,
+            )
+
             if idempotency_key:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        ws_id,
                         idempotency_key,
                         job.job_id,
                         "create_job",
                         payload_hash,
                         scope,
-                        json.dumps({"job": job.model_dump()}),
+                        json.dumps({"job": created_job.model_dump()}),
                         201,
                         job.created_at,
                     ),
                 )
-            return job
+            return created_job
 
-    def get_job(self, job_id: str) -> Job | None:
+    def get_job(self, job_id: str, workspace_id: str | None = None) -> Job | None:
         with get_db_connection(self.db_path) as conn:
-            cur = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+            if workspace_id:
+                cur = conn.execute(
+                    "SELECT * FROM jobs WHERE job_id = ? AND workspace_id = ?",
+                    (job_id, workspace_id),
+                )
+            else:
+                cur = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
             row = cur.fetchone()
             if row:
                 return self._row_to_job(row)
             return None
 
-    def get_job_by_number(self, job_number: str) -> Job | None:
+    def get_job_by_number(self, job_number: str, workspace_id: str | None = None) -> Job | None:
         with get_db_connection(self.db_path) as conn:
-            cur = conn.execute("SELECT * FROM jobs WHERE job_number = ?", (job_number,))
+            if workspace_id:
+                cur = conn.execute(
+                    "SELECT * FROM jobs WHERE job_number = ? AND workspace_id = ?",
+                    (job_number, workspace_id),
+                )
+            else:
+                cur = conn.execute("SELECT * FROM jobs WHERE job_number = ?", (job_number,))
             row = cur.fetchone()
             if row:
                 return self._row_to_job(row)
             return None
 
     def list_jobs(
-        self, state: JobState | None = None, limit: int = 50, offset: int = 0
+        self,
+        state: JobState | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        workspace_id: str | None = None,
     ) -> list[Job]:
         with get_db_connection(self.db_path) as conn:
-            if state:
+            if workspace_id:
+                if state:
+                    cur = conn.execute(
+                        "SELECT * FROM jobs WHERE workspace_id = ? AND current_state = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                        (workspace_id, state.value, limit, offset),
+                    )
+                else:
+                    cur = conn.execute(
+                        "SELECT * FROM jobs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                        (workspace_id, limit, offset),
+                    )
+            else:
+                if state:
+                    cur = conn.execute(
+                        "SELECT * FROM jobs WHERE current_state = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                        (state.value, limit, offset),
+                    )
+                else:
+                    cur = conn.execute(
+                        "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                        (limit, offset),
+                    )
+            return [self._row_to_job(row) for row in cur.fetchall()]
+
+    def _get_and_lock_job(
+        self, conn: Any, job_id: str, expected_version: int, workspace_id: str | None = None
+    ) -> Job:
+        """Fetch job and acquire row-level lock (Postgres FOR UPDATE; SQLite write-locks whole db via BEGIN IMMEDIATE)."""
+        if workspace_id:
+            if self.engine_name == "postgres":
                 cur = conn.execute(
-                    "SELECT * FROM jobs WHERE current_state = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                    (state.value, limit, offset),
+                    "SELECT * FROM jobs WHERE job_id = ? AND workspace_id = ? FOR UPDATE",
+                    (job_id, workspace_id),
                 )
             else:
                 cur = conn.execute(
-                    "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
+                    "SELECT * FROM jobs WHERE job_id = ? AND workspace_id = ?",
+                    (job_id, workspace_id),
                 )
-            return [self._row_to_job(row) for row in cur.fetchall()]
-
-    def _get_and_lock_job(self, conn: Any, job_id: str, expected_version: int) -> Job:
-        """Fetch job and acquire row-level lock (Postgres FOR UPDATE; SQLite write-locks whole db via BEGIN IMMEDIATE)."""
-        if self.engine_name == "postgres":
-            cur = conn.execute("SELECT * FROM jobs WHERE job_id = ? FOR UPDATE", (job_id,))
         else:
-            cur = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+            if self.engine_name == "postgres":
+                cur = conn.execute("SELECT * FROM jobs WHERE job_id = ? FOR UPDATE", (job_id,))
+            else:
+                cur = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+
         row = cur.fetchone()
         if not row:
             raise JobNotFoundError(f"Job with id '{job_id}' not found.")
@@ -268,16 +362,18 @@ class SqliteRepairJobStore:
         actor_name: str,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> tuple[TechnicianNote, Job]:
+        ws_id = workspace_id or "legacy_local_workspace"
         payload_hash = canonical_payload_hash(payload or note)
         scope = f"technician_note:{note.job_id}"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -292,7 +388,10 @@ class SqliteRepairJobStore:
                         Job.model_validate(cached["job"]),
                     )
 
-            job = self._get_and_lock_job(conn, note.job_id, expected_version)
+            job = self._get_and_lock_job(
+                conn, note.job_id, expected_version, workspace_id=workspace_id
+            )
+            actual_ws_id = job.workspace_id
             target_state = JobState.DIAGNOSIS
             validate_transition(
                 job.current_state, target_state, "add_diagnosis", ActorType.TECHNICIAN
@@ -304,12 +403,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO technician_notes (
-                    note_id, job_id, technician_name, diagnosis_findings, root_cause,
+                    note_id, workspace_id, job_id, technician_name, diagnosis_findings, root_cause,
                     recommended_action, test_measurements, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     note.note_id,
+                    actual_ws_id,
                     note.job_id,
                     note.technician_name,
                     note.diagnosis_findings,
@@ -344,12 +444,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
+                    actual_ws_id,
                     note.job_id,
                     job.current_state.value,
                     target_state.value,
@@ -359,7 +460,9 @@ class SqliteRepairJobStore:
                     idempotency_key,
                     job.version,
                     new_version,
-                    json.dumps({"note_id": note.note_id, "root_cause": note.root_cause}),
+                    json.dumps(
+                        {"findings": note.diagnosis_findings, "root_cause": note.root_cause}
+                    ),
                     now,
                 ),
             )
@@ -371,20 +474,18 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        actual_ws_id,
                         idempotency_key,
                         note.job_id,
                         "technician_note",
                         payload_hash,
                         scope,
                         json.dumps(
-                            {
-                                "technician_note": note.model_dump(),
-                                "job": updated_job.model_dump(),
-                            }
+                            {"technician_note": note.model_dump(), "job": updated_job.model_dump()}
                         ),
                         200,
                         now,
@@ -398,22 +499,22 @@ class SqliteRepairJobStore:
         job_id: str,
         parts: list[PartItem],
         expected_version: int,
-        actor_type: ActorType,
         actor_name: str,
+        actor_type: ActorType = ActorType.TECHNICIAN,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> tuple[list[PartItem], Job]:
-        if not parts:
-            raise ValidationError("Parts list cannot be empty.")
-        payload_hash = canonical_payload_hash(payload or {"parts": [p.model_dump() for p in parts]})
+        ws_id = workspace_id or "legacy_local_workspace"
+        payload_hash = canonical_payload_hash(payload or parts)
         scope = f"parts_lookup:{job_id}"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -428,7 +529,8 @@ class SqliteRepairJobStore:
                         Job.model_validate(cached["job"]),
                     )
 
-            job = self._get_and_lock_job(conn, job_id, expected_version)
+            job = self._get_and_lock_job(conn, job_id, expected_version, workspace_id=workspace_id)
+            actual_ws_id = job.workspace_id
             target_state = JobState.PARTS_LOOKUP
             validate_transition(job.current_state, target_state, "lookup_parts", actor_type)
 
@@ -439,13 +541,14 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO part_items (
-                        part_id, job_id, part_name, part_number, supplier_name,
+                        part_id, workspace_id, job_id, part_name, part_number, supplier_name,
                         unit_cost_inr, quantity, availability_status, suggested_by, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         part.part_id,
-                        part.job_id,
+                        actual_ws_id,
+                        job_id,
                         part.part_name,
                         part.part_number,
                         part.supplier_name,
@@ -459,7 +562,8 @@ class SqliteRepairJobStore:
 
             cur = conn.execute(
                 """
-                UPDATE jobs SET current_state = ?, version = ?, updated_at = ? WHERE job_id = ? AND version = ?
+                UPDATE jobs SET current_state = ?, version = ?, updated_at = ?
+                WHERE job_id = ? AND version = ?
                 """,
                 (target_state.value, new_version, now, job_id, job.version),
             )
@@ -473,12 +577,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
+                    actual_ws_id,
                     job_id,
                     job.current_state.value,
                     target_state.value,
@@ -500,10 +605,11 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        actual_ws_id,
                         idempotency_key,
                         job_id,
                         "parts_lookup",
@@ -529,16 +635,18 @@ class SqliteRepairJobStore:
         actor_name: str,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> tuple[Estimate, Job]:
+        ws_id = workspace_id or "legacy_local_workspace"
         payload_hash = canonical_payload_hash(payload or estimate)
         scope = f"estimate:{estimate.job_id}"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -553,7 +661,10 @@ class SqliteRepairJobStore:
                         Job.model_validate(cached["job"]),
                     )
 
-            job = self._get_and_lock_job(conn, estimate.job_id, expected_version)
+            job = self._get_and_lock_job(
+                conn, estimate.job_id, expected_version, workspace_id=workspace_id
+            )
+            actual_ws_id = job.workspace_id
             target_state = JobState.ESTIMATE_PENDING
             validate_transition(
                 job.current_state, target_state, "create_estimate", ActorType.TECHNICIAN
@@ -565,12 +676,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO estimates (
-                    estimate_id, job_id, labor_charge_inr, parts_total_inr, tax_inr,
+                    estimate_id, workspace_id, job_id, labor_charge_inr, parts_total_inr, tax_inr,
                     total_amount_inr, promised_delivery_date, notes, created_by, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     estimate.estimate_id,
+                    actual_ws_id,
                     estimate.job_id,
                     estimate.labor_charge_inr,
                     estimate.parts_total_inr,
@@ -585,9 +697,17 @@ class SqliteRepairJobStore:
 
             cur = conn.execute(
                 """
-                UPDATE jobs SET current_state = ?, version = ?, updated_at = ? WHERE job_id = ? AND version = ?
+                UPDATE jobs SET current_state = ?, version = ?, updated_at = ?, promised_date = ?
+                WHERE job_id = ? AND version = ?
                 """,
-                (target_state.value, new_version, now, estimate.job_id, job.version),
+                (
+                    target_state.value,
+                    new_version,
+                    now,
+                    estimate.promised_delivery_date or job.promised_date,
+                    estimate.job_id,
+                    job.version,
+                ),
             )
             if cur.rowcount != 1:
                 raise StateConflictError(
@@ -599,12 +719,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
+                    actual_ws_id,
                     estimate.job_id,
                     job.current_state.value,
                     target_state.value,
@@ -614,7 +735,13 @@ class SqliteRepairJobStore:
                     idempotency_key,
                     job.version,
                     new_version,
-                    json.dumps({"total_inr": estimate.total_amount_inr}),
+                    json.dumps(
+                        {
+                            "total_amount_inr": estimate.total_amount_inr,
+                            "parts_total_inr": estimate.parts_total_inr,
+                            "labor_charge_inr": estimate.labor_charge_inr,
+                        }
+                    ),
                     now,
                 ),
             )
@@ -626,20 +753,18 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        actual_ws_id,
                         idempotency_key,
                         estimate.job_id,
-                        "estimate",
+                        "create_estimate",
                         payload_hash,
                         scope,
                         json.dumps(
-                            {
-                                "estimate": estimate.model_dump(),
-                                "job": updated_job.model_dump(),
-                            }
+                            {"estimate": estimate.model_dump(), "job": updated_job.model_dump()}
                         ),
                         200,
                         now,
@@ -652,20 +777,22 @@ class SqliteRepairJobStore:
         self,
         approval: CustomerApproval,
         expected_version: int,
-        actor_type: ActorType,
         actor_name: str,
+        actor_type: ActorType = ActorType.TECHNICIAN,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> tuple[CustomerApproval, Job]:
+        ws_id = workspace_id or "legacy_local_workspace"
         payload_hash = canonical_payload_hash(payload or approval)
         scope = f"customer_approval:{approval.job_id}"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -680,13 +807,15 @@ class SqliteRepairJobStore:
                         Job.model_validate(cached["job"]),
                     )
 
-            job = self._get_and_lock_job(conn, approval.job_id, expected_version)
-            action = "approve_estimate" if approval.approved else "reject_estimate"
+            job = self._get_and_lock_job(
+                conn, approval.job_id, expected_version, workspace_id=workspace_id
+            )
+            actual_ws_id = job.workspace_id
             target_state = (
                 JobState.CUSTOMER_APPROVED if approval.approved else JobState.ESTIMATE_REJECTED
             )
-            # Strict human validation check
-            validate_transition(job.current_state, target_state, action, actor_type)
+            action_name = "customer_approved" if approval.approved else "customer_rejected"
+            validate_transition(job.current_state, target_state, action_name, actor_type)
 
             new_version = job.version + 1
             now = _now_iso()
@@ -694,12 +823,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO customer_approvals (
-                    approval_id, job_id, approved, approved_by, recorded_by_technician,
+                    approval_id, workspace_id, job_id, approved, approved_by, recorded_by_technician,
                     channel, approval_notes, agreed_amount_inr, approved_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     approval.approval_id,
+                    actual_ws_id,
                     approval.job_id,
                     1 if approval.approved else 0,
                     approval.approved_by,
@@ -713,7 +843,8 @@ class SqliteRepairJobStore:
 
             cur = conn.execute(
                 """
-                UPDATE jobs SET current_state = ?, version = ?, updated_at = ? WHERE job_id = ? AND version = ?
+                UPDATE jobs SET current_state = ?, version = ?, updated_at = ?
+                WHERE job_id = ? AND version = ?
                 """,
                 (target_state.value, new_version, now, approval.job_id, job.version),
             )
@@ -727,16 +858,17 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
+                    actual_ws_id,
                     approval.job_id,
                     job.current_state.value,
                     target_state.value,
-                    action,
+                    action_name,
                     actor_type.value,
                     actor_name,
                     idempotency_key,
@@ -746,7 +878,7 @@ class SqliteRepairJobStore:
                         {
                             "approved": approval.approved,
                             "approved_by": approval.approved_by,
-                            "agreed_amount_inr": approval.agreed_amount_inr,
+                            "amount": approval.agreed_amount_inr,
                         }
                     ),
                     now,
@@ -760,10 +892,11 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        actual_ws_id,
                         idempotency_key,
                         approval.job_id,
                         "customer_approval",
@@ -789,16 +922,18 @@ class SqliteRepairJobStore:
         actor_name: str,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> tuple[SupplierStatus, Job]:
+        ws_id = workspace_id or "legacy_local_workspace"
         payload_hash = canonical_payload_hash(payload or status)
         scope = f"supplier_status:{status.job_id}"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -813,14 +948,17 @@ class SqliteRepairJobStore:
                         Job.model_validate(cached["job"]),
                     )
 
-            job = self._get_and_lock_job(conn, status.job_id, expected_version)
+            job = self._get_and_lock_job(
+                conn, status.job_id, expected_version, workspace_id=workspace_id
+            )
+            actual_ws_id = job.workspace_id
             target_state = (
                 JobState.PARTS_READY
                 if status.parts_status in ("delivered", "in_stock")
                 else JobState.SUPPLIER_ORDERED
             )
             validate_transition(
-                job.current_state, target_state, "update_supplier_status", ActorType.TECHNICIAN
+                job.current_state, target_state, "update_supplier", ActorType.TECHNICIAN
             )
 
             new_version = job.version + 1
@@ -829,12 +967,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO supplier_statuses (
-                    status_id, job_id, supplier_name, order_reference, parts_status,
+                    status_id, workspace_id, job_id, supplier_name, order_reference, parts_status,
                     expected_arrival_date, tracking_notes, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     status.status_id,
+                    actual_ws_id,
                     status.job_id,
                     status.supplier_name,
                     status.order_reference,
@@ -847,7 +986,8 @@ class SqliteRepairJobStore:
 
             cur = conn.execute(
                 """
-                UPDATE jobs SET current_state = ?, version = ?, updated_at = ? WHERE job_id = ? AND version = ?
+                UPDATE jobs SET current_state = ?, version = ?, updated_at = ?
+                WHERE job_id = ? AND version = ?
                 """,
                 (target_state.value, new_version, now, status.job_id, job.version),
             )
@@ -861,16 +1001,17 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
+                    actual_ws_id,
                     status.job_id,
                     job.current_state.value,
                     target_state.value,
-                    "update_supplier_status",
+                    "update_supplier",
                     ActorType.TECHNICIAN.value,
                     actor_name,
                     idempotency_key,
@@ -880,6 +1021,7 @@ class SqliteRepairJobStore:
                         {
                             "supplier": status.supplier_name,
                             "parts_status": status.parts_status,
+                            "order_ref": status.order_reference,
                         }
                     ),
                     now,
@@ -893,10 +1035,11 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        actual_ws_id,
                         idempotency_key,
                         status.job_id,
                         "supplier_status",
@@ -923,16 +1066,18 @@ class SqliteRepairJobStore:
         actor_name: str,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> Job:
+        ws_id = workspace_id or "legacy_local_workspace"
         payload_hash = canonical_payload_hash(payload or {"target_state": target_state.value})
         scope = f"repair_queue:{job_id}"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -944,7 +1089,8 @@ class SqliteRepairJobStore:
                     cached = json.loads(row["response_payload"])
                     return Job.model_validate(cached["job"])
 
-            job = self._get_and_lock_job(conn, job_id, expected_version)
+            job = self._get_and_lock_job(conn, job_id, expected_version, workspace_id=workspace_id)
+            actual_ws_id = job.workspace_id
             action = "queue_repair" if target_state == JobState.REPAIR_QUEUE else "start_repair"
             validate_transition(job.current_state, target_state, action, ActorType.TECHNICIAN)
 
@@ -953,7 +1099,8 @@ class SqliteRepairJobStore:
 
             cur = conn.execute(
                 """
-                UPDATE jobs SET current_state = ?, version = ?, updated_at = ? WHERE job_id = ? AND version = ?
+                UPDATE jobs SET current_state = ?, version = ?, updated_at = ?
+                WHERE job_id = ? AND version = ?
                 """,
                 (target_state.value, new_version, now, job_id, job.version),
             )
@@ -967,12 +1114,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
+                    actual_ws_id,
                     job_id,
                     job.current_state.value,
                     target_state.value,
@@ -994,10 +1142,11 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        actual_ws_id,
                         idempotency_key,
                         job_id,
                         "repair_queue",
@@ -1015,20 +1164,22 @@ class SqliteRepairJobStore:
         self,
         completion: RepairCompletion,
         expected_version: int,
-        actor_type: ActorType,
         actor_name: str,
+        actor_type: ActorType = ActorType.TECHNICIAN,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> tuple[RepairCompletion, Job]:
+        ws_id = workspace_id or "legacy_local_workspace"
         payload_hash = canonical_payload_hash(payload or completion)
         scope = f"repair_completion:{completion.job_id}"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -1043,9 +1194,11 @@ class SqliteRepairJobStore:
                         Job.model_validate(cached["job"]),
                     )
 
-            job = self._get_and_lock_job(conn, completion.job_id, expected_version)
+            job = self._get_and_lock_job(
+                conn, completion.job_id, expected_version, workspace_id=workspace_id
+            )
+            actual_ws_id = job.workspace_id
             target_state = JobState.REPAIR_COMPLETED
-            # Human approval check strictly enforced
             validate_transition(job.current_state, target_state, "complete_repair", actor_type)
 
             new_version = job.version + 1
@@ -1054,13 +1207,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO repair_completions (
-                    completion_id, job_id, technician_name, actions_taken, parts_replaced,
-                    qc_tests_passed, burn_in_duration_minutes, technician_signature_confirmed,
-                    completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    completion_id, workspace_id, job_id, technician_name, actions_taken, parts_replaced,
+                    qc_tests_passed, burn_in_duration_minutes, technician_signature_confirmed, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     completion.completion_id,
+                    actual_ws_id,
                     completion.job_id,
                     completion.technician_name,
                     completion.actions_taken,
@@ -1074,7 +1227,8 @@ class SqliteRepairJobStore:
 
             cur = conn.execute(
                 """
-                UPDATE jobs SET current_state = ?, version = ?, updated_at = ? WHERE job_id = ? AND version = ?
+                UPDATE jobs SET current_state = ?, version = ?, updated_at = ?
+                WHERE job_id = ? AND version = ?
                 """,
                 (target_state.value, new_version, now, completion.job_id, job.version),
             )
@@ -1088,12 +1242,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
+                    actual_ws_id,
                     completion.job_id,
                     job.current_state.value,
                     target_state.value,
@@ -1105,8 +1260,9 @@ class SqliteRepairJobStore:
                     new_version,
                     json.dumps(
                         {
-                            "technician": completion.technician_name,
+                            "actions_taken": completion.actions_taken,
                             "qc_tests": completion.qc_tests_passed,
+                            "burn_in_min": completion.burn_in_duration_minutes,
                         }
                     ),
                     now,
@@ -1120,10 +1276,11 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        actual_ws_id,
                         idempotency_key,
                         completion.job_id,
                         "repair_completion",
@@ -1147,18 +1304,21 @@ class SqliteRepairJobStore:
         notification: PickupNotification,
         expected_version: int,
         actor_name: str,
+        actor_type: ActorType = ActorType.TECHNICIAN,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> tuple[PickupNotification, Job]:
+        ws_id = workspace_id or "legacy_local_workspace"
         payload_hash = canonical_payload_hash(payload or notification)
         scope = f"pickup_notification:{notification.job_id}"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -1173,10 +1333,13 @@ class SqliteRepairJobStore:
                         Job.model_validate(cached["job"]),
                     )
 
-            job = self._get_and_lock_job(conn, notification.job_id, expected_version)
+            job = self._get_and_lock_job(
+                conn, notification.job_id, expected_version, workspace_id=workspace_id
+            )
+            actual_ws_id = job.workspace_id
             target_state = JobState.READY_FOR_PICKUP
             validate_transition(
-                job.current_state, target_state, "send_pickup_notification", ActorType.TECHNICIAN
+                job.current_state, target_state, "notify_pickup", ActorType.TECHNICIAN
             )
 
             new_version = job.version + 1
@@ -1185,12 +1348,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO pickup_notifications (
-                    notification_id, job_id, channel, recipient_phone, message_text,
+                    notification_id, workspace_id, job_id, channel, recipient_phone, message_text,
                     sent_by_technician, sent_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     notification.notification_id,
+                    actual_ws_id,
                     notification.job_id,
                     notification.channel,
                     notification.recipient_phone,
@@ -1202,7 +1366,8 @@ class SqliteRepairJobStore:
 
             cur = conn.execute(
                 """
-                UPDATE jobs SET current_state = ?, version = ?, updated_at = ? WHERE job_id = ? AND version = ?
+                UPDATE jobs SET current_state = ?, version = ?, updated_at = ?
+                WHERE job_id = ? AND version = ?
                 """,
                 (target_state.value, new_version, now, notification.job_id, job.version),
             )
@@ -1216,16 +1381,17 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
+                    actual_ws_id,
                     notification.job_id,
                     job.current_state.value,
                     target_state.value,
-                    "send_pickup_notification",
+                    "notify_pickup",
                     ActorType.TECHNICIAN.value,
                     actor_name,
                     idempotency_key,
@@ -1248,10 +1414,11 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        actual_ws_id,
                         idempotency_key,
                         notification.job_id,
                         "pickup_notification",
@@ -1277,16 +1444,18 @@ class SqliteRepairJobStore:
         actor_name: str,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> tuple[FollowUpRecord, Job]:
+        ws_id = workspace_id or "legacy_local_workspace"
         payload_hash = canonical_payload_hash(payload or followup)
         scope = f"follow_up:{followup.job_id}"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -1301,7 +1470,10 @@ class SqliteRepairJobStore:
                         Job.model_validate(cached["job"]),
                     )
 
-            job = self._get_and_lock_job(conn, followup.job_id, expected_version)
+            job = self._get_and_lock_job(
+                conn, followup.job_id, expected_version, workspace_id=workspace_id
+            )
+            actual_ws_id = job.workspace_id
             target_state = JobState.FOLLOW_UP
             validate_transition(
                 job.current_state, target_state, "customer_pickup", ActorType.TECHNICIAN
@@ -1313,13 +1485,14 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO follow_ups (
-                    followup_id, job_id, picked_up_at, amount_paid_inr, payment_method,
+                    followup_id, workspace_id, job_id, picked_up_at, amount_paid_inr, payment_method,
                     payment_reference, warranty_days, customer_feedback, feedback_rating,
                     recorded_by, recorded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     followup.followup_id,
+                    actual_ws_id,
                     followup.job_id,
                     followup.picked_up_at,
                     followup.amount_paid_inr,
@@ -1335,7 +1508,8 @@ class SqliteRepairJobStore:
 
             cur = conn.execute(
                 """
-                UPDATE jobs SET current_state = ?, version = ?, updated_at = ? WHERE job_id = ? AND version = ?
+                UPDATE jobs SET current_state = ?, version = ?, updated_at = ?
+                WHERE job_id = ? AND version = ?
                 """,
                 (target_state.value, new_version, now, followup.job_id, job.version),
             )
@@ -1349,12 +1523,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
+                    actual_ws_id,
                     followup.job_id,
                     job.current_state.value,
                     target_state.value,
@@ -1366,8 +1541,9 @@ class SqliteRepairJobStore:
                     new_version,
                     json.dumps(
                         {
-                            "amount_paid_inr": followup.amount_paid_inr,
+                            "amount_paid": followup.amount_paid_inr,
                             "payment_method": followup.payment_method,
+                            "warranty_days": followup.warranty_days,
                         }
                     ),
                     now,
@@ -1381,20 +1557,18 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        actual_ws_id,
                         idempotency_key,
                         followup.job_id,
                         "follow_up",
                         payload_hash,
                         scope,
                         json.dumps(
-                            {
-                                "follow_up": followup.model_dump(),
-                                "job": updated_job.model_dump(),
-                            }
+                            {"follow_up": followup.model_dump(), "job": updated_job.model_dump()}
                         ),
                         200,
                         now,
@@ -1411,16 +1585,18 @@ class SqliteRepairJobStore:
         actor_name: str,
         idempotency_key: str | None = None,
         payload: Any = None,
+        workspace_id: str | None = None,
     ) -> tuple[JobClose, Job]:
+        ws_id = workspace_id or "legacy_local_workspace"
         payload_hash = canonical_payload_hash(payload or close)
         scope = f"job_close:{close.job_id}"
 
         with get_db_connection(self.db_path, write=True) as conn:
-            self._lock_idempotency_key(conn, idempotency_key)
+            self._lock_idempotency_key(conn, idempotency_key, workspace_id=ws_id)
             if idempotency_key:
                 cur = conn.execute(
-                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE idempotency_key = ?",
-                    (idempotency_key,),
+                    "SELECT payload_hash, scope, response_payload FROM idempotency_records WHERE workspace_id = ? AND idempotency_key = ?",
+                    (ws_id, idempotency_key),
                 )
                 row = cur.fetchone()
                 if row:
@@ -1435,9 +1611,11 @@ class SqliteRepairJobStore:
                         Job.model_validate(cached["job"]),
                     )
 
-            job = self._get_and_lock_job(conn, close.job_id, expected_version)
+            job = self._get_and_lock_job(
+                conn, close.job_id, expected_version, workspace_id=workspace_id
+            )
+            actual_ws_id = job.workspace_id
             target_state = JobState.CLOSED
-            # Human approval check strictly enforced
             validate_transition(job.current_state, target_state, "close_job", actor_type)
 
             new_version = job.version + 1
@@ -1446,11 +1624,12 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO job_closes (
-                    close_id, job_id, closed_by, resolution_summary, closed_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    close_id, workspace_id, job_id, closed_by, resolution_summary, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     close.close_id,
+                    actual_ws_id,
                     close.job_id,
                     close.closed_by,
                     close.resolution_summary,
@@ -1460,7 +1639,8 @@ class SqliteRepairJobStore:
 
             cur = conn.execute(
                 """
-                UPDATE jobs SET current_state = ?, version = ?, updated_at = ? WHERE job_id = ? AND version = ?
+                UPDATE jobs SET current_state = ?, version = ?, updated_at = ?
+                WHERE job_id = ? AND version = ?
                 """,
                 (target_state.value, new_version, now, close.job_id, job.version),
             )
@@ -1474,12 +1654,13 @@ class SqliteRepairJobStore:
             conn.execute(
                 """
                 INSERT INTO audit_events (
-                    event_id, job_id, from_state, to_state, action, actor_type, actor_name,
+                    event_id, workspace_id, job_id, from_state, to_state, action, actor_type, actor_name,
                     idempotency_key, version_before, version_after, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
+                    actual_ws_id,
                     close.job_id,
                     job.current_state.value,
                     target_state.value,
@@ -1489,7 +1670,7 @@ class SqliteRepairJobStore:
                     idempotency_key,
                     job.version,
                     new_version,
-                    json.dumps({"closed_by": close.closed_by}),
+                    json.dumps({"resolution": close.resolution_summary}),
                     now,
                 ),
             )
@@ -1501,20 +1682,18 @@ class SqliteRepairJobStore:
                 conn.execute(
                     """
                     INSERT INTO idempotency_records (
-                        idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        workspace_id, idempotency_key, job_id, action, payload_hash, scope, response_payload, response_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        actual_ws_id,
                         idempotency_key,
                         close.job_id,
                         "job_close",
                         payload_hash,
                         scope,
                         json.dumps(
-                            {
-                                "job_close": close.model_dump(),
-                                "job": updated_job.model_dump(),
-                            }
+                            {"job_close": close.model_dump(), "job": updated_job.model_dump()}
                         ),
                         200,
                         now,
@@ -1523,234 +1702,216 @@ class SqliteRepairJobStore:
 
             return close, updated_job
 
-    def get_job_details(self, job_id: str) -> dict[str, Any]:
-        with get_db_connection(self.db_path) as conn:
-            cur = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
-            job_row = cur.fetchone()
-            if not job_row:
-                raise JobNotFoundError(f"Job with id '{job_id}' not found.")
-            job = self._row_to_job(job_row)
+    def get_job_details(self, job_id: str, workspace_id: str | None = None) -> dict[str, Any]:
+        job = self.get_job(job_id, workspace_id=workspace_id)
+        if not job:
+            raise JobNotFoundError(f"Job with id '{job_id}' not found.")
 
-            notes_cur = conn.execute(
-                "SELECT * FROM technician_notes WHERE job_id = ? ORDER BY created_at ASC", (job_id,)
+        with get_db_connection(self.db_path) as conn:
+            if workspace_id:
+                ws_filter = "AND workspace_id = ?"
+                ws_params: tuple[str, ...] = (job_id, workspace_id)
+            else:
+                ws_filter = ""
+                ws_params = (job_id,)
+
+            # Notes
+            cur = conn.execute(
+                f"SELECT * FROM technician_notes WHERE job_id = ? {ws_filter} ORDER BY created_at ASC",
+                ws_params,
             )
             notes = [
-                {
-                    "note_id": r["note_id"],
-                    "job_id": r["job_id"],
-                    "technician_name": r["technician_name"],
-                    "diagnosis_findings": r["diagnosis_findings"],
-                    "root_cause": r["root_cause"],
-                    "recommended_action": r["recommended_action"],
-                    "test_measurements": json.loads(r["test_measurements"]),
-                    "created_at": r["created_at"],
-                }
-                for r in notes_cur.fetchall()
+                TechnicianNote(
+                    note_id=r["note_id"],
+                    job_id=r["job_id"],
+                    technician_name=r["technician_name"],
+                    diagnosis_findings=r["diagnosis_findings"],
+                    root_cause=r["root_cause"],
+                    recommended_action=r["recommended_action"],
+                    test_measurements=json.loads(r["test_measurements"]),
+                    created_at=r["created_at"],
+                )
+                for r in cur.fetchall()
             ]
 
-            parts_cur = conn.execute(
-                "SELECT * FROM part_items WHERE job_id = ? ORDER BY created_at ASC", (job_id,)
+            # Parts
+            cur = conn.execute(
+                f"SELECT * FROM part_items WHERE job_id = ? {ws_filter} ORDER BY created_at ASC",
+                ws_params,
             )
             parts = [
-                {
-                    "part_id": r["part_id"],
-                    "job_id": r["job_id"],
-                    "part_name": r["part_name"],
-                    "part_number": r["part_number"],
-                    "supplier_name": r["supplier_name"],
-                    "unit_cost_inr": r["unit_cost_inr"],
-                    "quantity": r["quantity"],
-                    "availability_status": r["availability_status"],
-                    "suggested_by": r["suggested_by"],
-                    "created_at": r["created_at"],
-                }
-                for r in parts_cur.fetchall()
+                PartItem(
+                    part_id=r["part_id"],
+                    job_id=r["job_id"],
+                    part_name=r["part_name"],
+                    part_number=r["part_number"],
+                    supplier_name=r["supplier_name"],
+                    unit_cost_inr=r["unit_cost_inr"],
+                    quantity=r["quantity"],
+                    availability_status=r["availability_status"],
+                    suggested_by=r["suggested_by"],
+                    created_at=r["created_at"],
+                )
+                for r in cur.fetchall()
             ]
 
-            est_cur = conn.execute(
-                "SELECT * FROM estimates WHERE job_id = ? ORDER BY created_at DESC LIMIT 1",
-                (job_id,),
+            # Latest estimate
+            cur = conn.execute(
+                f"SELECT * FROM estimates WHERE job_id = ? {ws_filter} ORDER BY created_at DESC LIMIT 1",
+                ws_params,
             )
-            est_row = est_cur.fetchone()
+            est_row = cur.fetchone()
             estimate = (
-                {
-                    "estimate_id": est_row["estimate_id"],
-                    "job_id": est_row["job_id"],
-                    "labor_charge_inr": est_row["labor_charge_inr"],
-                    "parts_total_inr": est_row["parts_total_inr"],
-                    "tax_inr": est_row["tax_inr"],
-                    "total_amount_inr": est_row["total_amount_inr"],
-                    "promised_delivery_date": est_row["promised_delivery_date"],
-                    "notes": est_row["notes"],
-                    "created_by": est_row["created_by"],
-                    "created_at": est_row["created_at"],
-                }
+                Estimate(
+                    estimate_id=est_row["estimate_id"],
+                    job_id=est_row["job_id"],
+                    labor_charge_inr=est_row["labor_charge_inr"],
+                    parts_total_inr=est_row["parts_total_inr"],
+                    tax_inr=est_row["tax_inr"],
+                    total_amount_inr=est_row["total_amount_inr"],
+                    promised_delivery_date=est_row["promised_delivery_date"],
+                    notes=est_row["notes"],
+                    created_by=est_row["created_by"],
+                    created_at=est_row["created_at"],
+                )
                 if est_row
                 else None
             )
 
-            appr_cur = conn.execute(
-                "SELECT * FROM customer_approvals WHERE job_id = ? ORDER BY approved_at DESC LIMIT 1",
-                (job_id,),
+            # Latest approval
+            cur = conn.execute(
+                f"SELECT * FROM customer_approvals WHERE job_id = ? {ws_filter} ORDER BY approved_at DESC LIMIT 1",
+                ws_params,
             )
-            appr_row = appr_cur.fetchone()
-            approval = (
-                {
-                    "approval_id": appr_row["approval_id"],
-                    "job_id": appr_row["job_id"],
-                    "approved": bool(appr_row["approved"]),
-                    "approved_by": appr_row["approved_by"],
-                    "recorded_by_technician": appr_row["recorded_by_technician"],
-                    "channel": appr_row["channel"],
-                    "approval_notes": appr_row["approval_notes"],
-                    "agreed_amount_inr": appr_row["agreed_amount_inr"],
-                    "approved_at": appr_row["approved_at"],
-                }
-                if appr_row
+            app_row = cur.fetchone()
+            customer_approval = (
+                CustomerApproval(
+                    approval_id=app_row["approval_id"],
+                    job_id=app_row["job_id"],
+                    approved=bool(app_row["approved"]),
+                    approved_by=app_row["approved_by"],
+                    recorded_by_technician=app_row["recorded_by_technician"],
+                    channel=app_row["channel"],
+                    approval_notes=app_row["approval_notes"],
+                    agreed_amount_inr=app_row["agreed_amount_inr"],
+                    approved_at=app_row["approved_at"],
+                )
+                if app_row
                 else None
             )
 
-            sup_cur = conn.execute(
-                "SELECT * FROM supplier_statuses WHERE job_id = ? ORDER BY updated_at DESC",
-                (job_id,),
+            # Supplier statuses
+            cur = conn.execute(
+                f"SELECT * FROM supplier_statuses WHERE job_id = ? {ws_filter} ORDER BY updated_at ASC",
+                ws_params,
             )
             supplier_statuses = [
-                {
-                    "status_id": r["status_id"],
-                    "job_id": r["job_id"],
-                    "supplier_name": r["supplier_name"],
-                    "order_reference": r["order_reference"],
-                    "parts_status": r["parts_status"],
-                    "expected_arrival_date": r["expected_arrival_date"],
-                    "tracking_notes": r["tracking_notes"],
-                    "updated_at": r["updated_at"],
-                }
-                for r in sup_cur.fetchall()
+                SupplierStatus(
+                    status_id=r["status_id"],
+                    job_id=r["job_id"],
+                    supplier_name=r["supplier_name"],
+                    order_reference=r["order_reference"],
+                    parts_status=r["parts_status"],
+                    expected_arrival_date=r["expected_arrival_date"],
+                    tracking_notes=r["tracking_notes"],
+                    updated_at=r["updated_at"],
+                )
+                for r in cur.fetchall()
             ]
 
-            comp_cur = conn.execute(
-                "SELECT * FROM repair_completions WHERE job_id = ? ORDER BY completed_at DESC LIMIT 1",
-                (job_id,),
+            # Latest completion
+            cur = conn.execute(
+                f"SELECT * FROM repair_completions WHERE job_id = ? {ws_filter} ORDER BY completed_at DESC LIMIT 1",
+                ws_params,
             )
-            comp_row = comp_cur.fetchone()
-            completion = (
-                {
-                    "completion_id": comp_row["completion_id"],
-                    "job_id": comp_row["job_id"],
-                    "technician_name": comp_row["technician_name"],
-                    "actions_taken": comp_row["actions_taken"],
-                    "parts_replaced": json.loads(comp_row["parts_replaced"]),
-                    "qc_tests_passed": json.loads(comp_row["qc_tests_passed"]),
-                    "burn_in_duration_minutes": comp_row["burn_in_duration_minutes"],
-                    "technician_signature_confirmed": bool(
-                        comp_row["technician_signature_confirmed"]
-                    ),
-                    "completed_at": comp_row["completed_at"],
-                }
+            comp_row = cur.fetchone()
+            repair_completion = (
+                RepairCompletion(
+                    completion_id=comp_row["completion_id"],
+                    job_id=comp_row["job_id"],
+                    technician_name=comp_row["technician_name"],
+                    actions_taken=comp_row["actions_taken"],
+                    parts_replaced=json.loads(comp_row["parts_replaced"]),
+                    qc_tests_passed=json.loads(comp_row["qc_tests_passed"]),
+                    burn_in_duration_minutes=comp_row["burn_in_duration_minutes"],
+                    technician_signature_confirmed=bool(comp_row["technician_signature_confirmed"]),
+                    completed_at=comp_row["completed_at"],
+                )
                 if comp_row
                 else None
             )
 
-            notif_cur = conn.execute(
-                "SELECT * FROM pickup_notifications WHERE job_id = ? ORDER BY sent_at DESC",
-                (job_id,),
+            # Notifications
+            cur = conn.execute(
+                f"SELECT * FROM pickup_notifications WHERE job_id = ? {ws_filter} ORDER BY sent_at ASC",
+                ws_params,
             )
-            notifications = [
-                {
-                    "notification_id": r["notification_id"],
-                    "job_id": r["job_id"],
-                    "channel": r["channel"],
-                    "recipient_phone": r["recipient_phone"],
-                    "message_text": r["message_text"],
-                    "sent_by_technician": r["sent_by_technician"],
-                    "sent_at": r["sent_at"],
-                }
-                for r in notif_cur.fetchall()
+            pickup_notifications = [
+                PickupNotification(
+                    notification_id=r["notification_id"],
+                    job_id=r["job_id"],
+                    channel=r["channel"],
+                    recipient_phone=r["recipient_phone"],
+                    message_text=r["message_text"],
+                    sent_by_technician=r["sent_by_technician"],
+                    sent_at=r["sent_at"],
+                )
+                for r in cur.fetchall()
             ]
 
-            fol_cur = conn.execute(
-                "SELECT * FROM follow_ups WHERE job_id = ? ORDER BY recorded_at DESC LIMIT 1",
-                (job_id,),
+            # Latest follow up
+            cur = conn.execute(
+                f"SELECT * FROM follow_ups WHERE job_id = ? {ws_filter} ORDER BY recorded_at DESC LIMIT 1",
+                ws_params,
             )
-            fol_row = fol_cur.fetchone()
+            fol_row = cur.fetchone()
             follow_up = (
-                {
-                    "followup_id": fol_row["followup_id"],
-                    "job_id": fol_row["job_id"],
-                    "picked_up_at": fol_row["picked_up_at"],
-                    "amount_paid_inr": fol_row["amount_paid_inr"],
-                    "payment_method": fol_row["payment_method"],
-                    "payment_reference": fol_row["payment_reference"],
-                    "warranty_days": fol_row["warranty_days"],
-                    "customer_feedback": fol_row["customer_feedback"],
-                    "feedback_rating": fol_row["feedback_rating"],
-                    "recorded_by": fol_row["recorded_by"],
-                    "recorded_at": fol_row["recorded_at"],
-                }
+                FollowUpRecord(
+                    followup_id=fol_row["followup_id"],
+                    job_id=fol_row["job_id"],
+                    picked_up_at=fol_row["picked_up_at"],
+                    amount_paid_inr=fol_row["amount_paid_inr"],
+                    payment_method=fol_row["payment_method"],
+                    payment_reference=fol_row["payment_reference"],
+                    warranty_days=fol_row["warranty_days"],
+                    customer_feedback=fol_row["customer_feedback"],
+                    feedback_rating=fol_row["feedback_rating"],
+                    recorded_by=fol_row["recorded_by"],
+                    recorded_at=fol_row["recorded_at"],
+                )
                 if fol_row
                 else None
             )
 
-            close_cur = conn.execute(
-                "SELECT * FROM job_closes WHERE job_id = ? ORDER BY closed_at DESC LIMIT 1",
-                (job_id,),
+            # Latest close
+            cur = conn.execute(
+                f"SELECT * FROM job_closes WHERE job_id = ? {ws_filter} ORDER BY closed_at DESC LIMIT 1",
+                ws_params,
             )
-            close_row = close_cur.fetchone()
-            close_info = (
-                {
-                    "close_id": close_row["close_id"],
-                    "job_id": close_row["job_id"],
-                    "closed_by": close_row["closed_by"],
-                    "resolution_summary": close_row["resolution_summary"],
-                    "closed_at": close_row["closed_at"],
-                }
-                if close_row
+            cls_row = cur.fetchone()
+            job_close = (
+                JobClose(
+                    close_id=cls_row["close_id"],
+                    job_id=cls_row["job_id"],
+                    closed_by=cls_row["closed_by"],
+                    resolution_summary=cls_row["resolution_summary"],
+                    closed_at=cls_row["closed_at"],
+                )
+                if cls_row
                 else None
             )
 
-            audit_cur = conn.execute(
-                "SELECT * FROM audit_events WHERE job_id = ? ORDER BY created_at ASC", (job_id,)
+            # Audit events
+            cur = conn.execute(
+                f"SELECT * FROM audit_events WHERE job_id = ? {ws_filter} ORDER BY version_after ASC",
+                ws_params,
             )
             audit_events = [
-                {
-                    "event_id": r["event_id"],
-                    "job_id": r["job_id"],
-                    "from_state": r["from_state"],
-                    "to_state": r["to_state"],
-                    "action": r["action"],
-                    "actor_type": r["actor_type"],
-                    "actor_name": r["actor_name"],
-                    "idempotency_key": r["idempotency_key"],
-                    "version_before": r["version_before"],
-                    "version_after": r["version_after"],
-                    "payload": json.loads(r["payload"]),
-                    "created_at": r["created_at"],
-                }
-                for r in audit_cur.fetchall()
-            ]
-
-            return {
-                "job": job.model_dump(),
-                "technician_notes": notes,
-                "parts": parts,
-                "estimate": estimate,
-                "customer_approval": approval,
-                "supplier_statuses": supplier_statuses,
-                "repair_completion": completion,
-                "pickup_notifications": notifications,
-                "follow_up": follow_up,
-                "job_close": close_info,
-                "audit_events": audit_events,
-            }
-
-    def get_audit_events(self, job_id: str) -> list[AuditEvent]:
-        with get_db_connection(self.db_path) as conn:
-            cur = conn.execute(
-                "SELECT * FROM audit_events WHERE job_id = ? ORDER BY created_at ASC", (job_id,)
-            )
-            return [
                 AuditEvent(
                     event_id=r["event_id"],
+                    workspace_id=r["workspace_id"]
+                    if "workspace_id" in r.keys()  # noqa: SIM118
+                    else "legacy_local_workspace",
                     job_id=r["job_id"],
                     from_state=r["from_state"],
                     to_state=r["to_state"],
@@ -1765,6 +1926,188 @@ class SqliteRepairJobStore:
                 )
                 for r in cur.fetchall()
             ]
+
+            return {
+                "job": job,
+                "technician_notes": notes,
+                "parts": parts,
+                "estimate": estimate,
+                "customer_approval": customer_approval,
+                "supplier_statuses": supplier_statuses,
+                "repair_completion": repair_completion,
+                "pickup_notifications": pickup_notifications,
+                "follow_up": follow_up,
+                "job_close": job_close,
+                "audit_events": audit_events,
+            }
+
+    def get_audit_events(self, job_id: str, workspace_id: str | None = None) -> list[AuditEvent]:
+        job = self.get_job(job_id, workspace_id=workspace_id)
+        if not job:
+            raise JobNotFoundError(f"Job with id '{job_id}' not found.")
+
+        with get_db_connection(self.db_path) as conn:
+            if workspace_id:
+                cur = conn.execute(
+                    "SELECT * FROM audit_events WHERE job_id = ? AND workspace_id = ? ORDER BY version_after ASC",
+                    (job_id, workspace_id),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT * FROM audit_events WHERE job_id = ? ORDER BY version_after ASC",
+                    (job_id,),
+                )
+            return [
+                AuditEvent(
+                    event_id=r["event_id"],
+                    workspace_id=r["workspace_id"]
+                    if "workspace_id" in r.keys()  # noqa: SIM118
+                    else "legacy_local_workspace",
+                    job_id=r["job_id"],
+                    from_state=r["from_state"],
+                    to_state=r["to_state"],
+                    action=r["action"],
+                    actor_type=ActorType(r["actor_type"]),
+                    actor_name=r["actor_name"],
+                    idempotency_key=r["idempotency_key"],
+                    version_before=r["version_before"],
+                    version_after=r["version_after"],
+                    payload=json.loads(r["payload"]),
+                    created_at=r["created_at"],
+                )
+                for r in cur.fetchall()
+            ]
+
+    # Workspace and session management helpers
+    def get_workspace_by_token_hash(self, token_hash: str) -> Workspace | None:
+        with get_db_connection(self.db_path) as conn:
+            cur = conn.execute(
+                """
+                SELECT w.* FROM workspaces w
+                JOIN session_tokens s ON w.workspace_id = s.workspace_id
+                WHERE s.token_hash = ?
+                """,
+                (token_hash,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return Workspace(
+                workspace_id=row["workspace_id"],
+                created_at=row["created_at"],
+                expires_at=row["expires_at"],
+                last_active_at=row["last_active_at"],
+            )
+
+    def create_workspace_and_token(
+        self,
+        workspace: Workspace,
+        token_hash: str,
+        expires_at: str,
+        max_sessions_per_minute: int = 30,
+        max_global_workspaces: int = 1000,
+    ) -> None:
+        """Atomically check session rate and workspace capacity under write lock before inserting."""
+        now = datetime.now(UTC)
+        cutoff_60s = (now - timedelta(seconds=60)).isoformat()
+        now_str = now.isoformat()
+
+        with get_db_connection(self.db_path, write=True) as conn:
+            if conn.is_postgres:
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext('benchbook_session_admission'))"
+                )
+
+            # 1. Check session rate limit
+            cur_sess = conn.execute(
+                "SELECT COUNT(*) AS count FROM session_tokens WHERE created_at > ?",
+                (cutoff_60s,),
+            )
+            row_sess = cur_sess.fetchone()
+            recent_sessions = int(row_sess["count"]) if row_sess else 0
+            if recent_sessions >= max_sessions_per_minute:
+                raise CapacityExceededError(
+                    f"Session creation rate limit exceeded ({max_sessions_per_minute} sessions/minute globally). Please retry shortly."
+                )
+
+            # 2. Check active workspaces capacity
+            cur_ws = conn.execute(
+                "SELECT COUNT(*) AS count FROM workspaces WHERE expires_at > ? AND workspace_id != 'legacy_local_workspace'",
+                (now_str,),
+            )
+            row_ws = cur_ws.fetchone()
+            active_ws = int(row_ws["count"]) if row_ws else 0
+            if active_ws >= max_global_workspaces:
+                raise CapacityExceededError(
+                    f"Maximum global workbench capacity reached ({max_global_workspaces} active workbenches). Please try again later."
+                )
+
+            # 3. Insert workspace and token atomically
+            conn.execute(
+                """
+                INSERT INTO workspaces (workspace_id, created_at, expires_at, last_active_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    workspace.workspace_id,
+                    workspace.created_at,
+                    workspace.expires_at,
+                    workspace.last_active_at,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO session_tokens (token_hash, workspace_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    token_hash,
+                    workspace.workspace_id,
+                    workspace.created_at,
+                    expires_at,
+                ),
+            )
+
+    def save_workspace_and_token(
+        self, workspace: Workspace, token_hash: str, expires_at: str
+    ) -> None:
+        self.create_workspace_and_token(workspace, token_hash, expires_at)
+
+    def touch_workspace_activity(self, workspace_id: str, last_active_at: str) -> None:
+        with get_db_connection(self.db_path, write=True) as conn:
+            conn.execute(
+                "UPDATE workspaces SET last_active_at = ? WHERE workspace_id = ?",
+                (last_active_at, workspace_id),
+            )
+
+    def count_workspace_jobs(self, workspace_id: str) -> int:
+        with get_db_connection(self.db_path) as conn:
+            cur = conn.execute(
+                "SELECT COUNT(*) AS count FROM jobs WHERE workspace_id = ?",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+            return int(row["count"]) if row else 0
+
+    def count_active_workspaces(self) -> int:
+        now_str = datetime.now(UTC).isoformat()
+        with get_db_connection(self.db_path) as conn:
+            cur = conn.execute(
+                "SELECT COUNT(*) AS count FROM workspaces WHERE expires_at > ? AND workspace_id != 'legacy_local_workspace'",
+                (now_str,),
+            )
+            row = cur.fetchone()
+            return int(row["count"]) if row else 0
+
+    def count_recent_sessions(self, window_seconds: int = 60) -> int:
+        cutoff = (datetime.now(UTC) - timedelta(seconds=window_seconds)).isoformat()
+        with get_db_connection(self.db_path) as conn:
+            cur = conn.execute(
+                "SELECT COUNT(*) AS count FROM session_tokens WHERE created_at > ?",
+                (cutoff,),
+            )
+            row = cur.fetchone()
+            return int(row["count"]) if row else 0
 
 
 SqlRepairJobStore = SqliteRepairJobStore

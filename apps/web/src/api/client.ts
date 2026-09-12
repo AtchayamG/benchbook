@@ -1,10 +1,13 @@
 import type {
+  AdviceRequest,
+  AdviceResponse,
   AssistantDraftMessageResponse,
   AssistantPartsSuggestionResponse,
   AuditEvent,
   HealthResponse,
   Job,
   JobDetails,
+  SessionResponse,
 } from '../types/benchbook';
 
 const ENV_BASE = import.meta.env.VITE_API_BASE_URL;
@@ -20,6 +23,13 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+async function fetchWithCredentials(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    credentials: 'include',
+  });
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -41,24 +51,50 @@ async function handleResponse<T>(res: Response): Promise<T> {
 }
 
 export const api = {
+  async initSession(): Promise<SessionResponse> {
+    const res = await fetchWithCredentials(`${API_BASE}/session`, {
+      method: 'POST',
+    });
+    return handleResponse(res);
+  },
+
+  async getSession(): Promise<SessionResponse> {
+    const res = await fetchWithCredentials(`${API_BASE}/session`, {
+      method: 'GET',
+    });
+    return handleResponse(res);
+  },
+
+  async getJobAdvice(jobId: string, payload: AdviceRequest): Promise<AdviceResponse> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (payload.idempotency_key) {
+      headers['Idempotency-Key'] = payload.idempotency_key;
+    }
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/advice`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+    return handleResponse(res);
+  },
   async getHealth(): Promise<HealthResponse> {
-    const res = await fetch(`${API_BASE}/health`);
+    const res = await fetchWithCredentials(`${API_BASE}/health`);
     return handleResponse(res);
   },
 
   async getJobs(state?: string): Promise<{ jobs: Job[]; count: number }> {
     const url = state ? `${API_BASE}/jobs?state=${encodeURIComponent(state)}` : `${API_BASE}/jobs`;
-    const res = await fetch(url);
+    const res = await fetchWithCredentials(url);
     return handleResponse(res);
   },
 
   async getJobDetails(jobId: string): Promise<JobDetails> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}`);
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}`);
     return handleResponse(res);
   },
 
   async getAuditTrail(jobId: string): Promise<{ job_id: string; audit_events: AuditEvent[] }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/audit`);
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/audit`);
     return handleResponse(res);
   },
 
@@ -76,7 +112,7 @@ export const api = {
     assigned_technician?: string | null;
     idempotency_key?: string | null;
   }): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -85,7 +121,7 @@ export const api = {
   },
 
   async seedSampleJobs(): Promise<{ message: string; jobs: Job[] }> {
-    const res = await fetch(`${API_BASE}/jobs/seed`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/seed`, {
       method: 'POST',
     });
     return handleResponse(res);
@@ -103,7 +139,7 @@ export const api = {
       idempotency_key?: string | null;
     }
   ): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/technician-note`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/technician-note`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -128,7 +164,7 @@ export const api = {
       idempotency_key?: string | null;
     }
   ): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/parts-lookup`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/parts-lookup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -150,7 +186,7 @@ export const api = {
       idempotency_key?: string | null;
     }
   ): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/estimate`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/estimate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -172,7 +208,7 @@ export const api = {
       idempotency_key?: string | null;
     }
   ): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/customer-approval`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/customer-approval`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -193,7 +229,7 @@ export const api = {
       idempotency_key?: string | null;
     }
   ): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/supplier-status`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/supplier-status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -210,7 +246,7 @@ export const api = {
       idempotency_key?: string | null;
     }
   ): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/repair-queue`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/repair-queue`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -232,7 +268,7 @@ export const api = {
       idempotency_key?: string | null;
     }
   ): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/repair-completion`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/repair-completion`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -251,7 +287,7 @@ export const api = {
       idempotency_key?: string | null;
     }
   ): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/pickup-notification`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/pickup-notification`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -273,7 +309,7 @@ export const api = {
       idempotency_key?: string | null;
     }
   ): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/follow-up`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/follow-up`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -291,7 +327,7 @@ export const api = {
       idempotency_key?: string | null;
     }
   ): Promise<{ job: Job }> {
-    const res = await fetch(`${API_BASE}/jobs/${jobId}/close`, {
+    const res = await fetchWithCredentials(`${API_BASE}/jobs/${jobId}/close`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -304,7 +340,7 @@ export const api = {
     symptoms: string;
     findings?: string | null;
   }): Promise<AssistantPartsSuggestionResponse> {
-    const res = await fetch(`${API_BASE}/assistant/suggest-parts`, {
+    const res = await fetchWithCredentials(`${API_BASE}/assistant/suggest-parts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -322,7 +358,7 @@ export const api = {
     total_amount_inr: number;
     promised_date?: string | null;
   }): Promise<AssistantDraftMessageResponse> {
-    const res = await fetch(`${API_BASE}/assistant/draft-estimate-message`, {
+    const res = await fetchWithCredentials(`${API_BASE}/assistant/draft-estimate-message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -337,7 +373,7 @@ export const api = {
     total_amount_inr: number;
     warranty_days?: number;
   }): Promise<AssistantDraftMessageResponse> {
-    const res = await fetch(`${API_BASE}/assistant/draft-pickup-notification`, {
+    const res = await fetchWithCredentials(`${API_BASE}/assistant/draft-pickup-notification`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

@@ -214,3 +214,51 @@ export interface HealthResponse {
     human_approval_required: boolean;
   };
 }
+
+export interface SessionResponse {
+  workspace_id: string;
+  authenticated: boolean;
+  expires_at: string;
+  is_new?: boolean | null;
+  active_jobs_count?: number;
+  max_jobs_capacity?: number;
+}
+
+export interface AdviceProvenance {
+  engine: string;
+  provider: string;
+  model: string;
+  reservation_id: string;
+  generated_at: string;
+  actual_sends: number;
+  actual_tools: number;
+  latency_ms: number;
+  advisory_only: boolean;
+  requires_human_verification: boolean;
+}
+
+export interface SuggestedPart {
+  part_id: string;
+  part_name: string;
+  unit_cost_inr: number;
+  availability: string;
+  rationale: string;
+  supplier: string;
+}
+
+export interface AdviceResponse {
+  job_id: string;
+  source_version: number;
+  operation: 'parts' | 'estimate_message' | 'pickup_message';
+  summary: string;
+  suggested_parts: SuggestedPart[];
+  draft_notes?: string | null;
+  draft_message?: string | null;
+  provenance: AdviceProvenance;
+}
+
+export interface AdviceRequest {
+  operation: 'parts' | 'estimate_message' | 'pickup_message';
+  expected_version: number;
+  idempotency_key?: string | null;
+}

@@ -257,47 +257,106 @@ Transitions state to `closed`.
 
 ---
 
-## 5. Assistant Advisory Endpoints
+## 5. Canonical Owned-Job Advisory Endpoint (BB-004)
 
-All assistant endpoints return explicit provenance:
-```json
-"provenance": {
-  "engine": "benchbook_offline_adapter",
-  "model": "rule-heuristic-v1",
-  "generated_at": "2026-09-12T12:00:00Z",
-  "advisory_only": true,
-  "requires_human_verification": true
-}
-```
+All AI advisory capabilities are accessed strictly via the owned-job route:
+`POST /api/jobs/{job_id}/advice`
 
-### `POST /api/assistant/suggest-parts`
+The advisory engine operates as an untrusted advisory sub-worker within an atomic SQL admission engine. The assistant **CANNOT** modify job state, approve estimates, sign off completion, or close jobs.
+
+### `POST /api/jobs/{job_id}/advice`
+- **Request Headers**:
+  - `Cookie: benchbook_session=<32-byte-token>`
+  - `Idempotency-Key` (optional string): Used for idempotent replaying of advice.
+- **Request Body**:
+  ```json
+  {
+    "operation": "parts",
+    "expected_version": 2,
+    "idempotency_key": "optional-key"
+  }
+  ```
+- **Supported Operations**:
+  - `"parts"`: Recommends grounded replacement spare parts from the verified catalogue based on technician diagnostic findings.
+  - `"estimate"` or `"estimate_message"`: Generates customer WhatsApp/SMS estimate draft using deterministic calculation templates and verified DB facts (requires saved estimate).
+  - `"pickup"` or `"pickup_message"`: Generates customer pickup ready notification message (requires recorded repair completion).
+
+- **Response 200**:
+  ```json
+  {
+    "job_id": "3e366d25-9817-4a9b-9895-2f3d67671f5c",
+    "source_version": 2,
+    "operation": "parts",
+    "summary": "Motor bearing wear observed. Recommend 608ZZ replacement.",
+    "suggested_parts": [
+      {
+        "part_id": "FAN-BRG-608ZZ",
+        "part_name": "Deep Groove Ball Bearing 608ZZ",
+        "unit_cost_inr": 120.0,
+        "availability": "Sample / Unverified",
+        "reason": "Matches vibration and humming symptoms on speed 2."
+      }
+    ],
+    "draft_notes": null,
+    "draft_message": null,
+    "provenance": {
+      "engine": "strands",
+      "provider": "groq",
+      "model": "openai/gpt-oss-20b",
+      "reservation_id": "res_98a72b104c9e",
+      "generated_at": "2026-09-12T16:20:00.000Z",
+      "actual_sends": 2,
+      "actual_tools": 1,
+      "latency_ms": 340,
+      "advisory_only": true,
+      "requires_human_verification": true
+    }
+  }
+  ```
+
+---
+
+## 6. Public Workbench Sessions (BB-004)
+
+Public visitors operate within isolated temporary workspaces (24-hour TTL, 50 jobs max).
+
+### `POST /api/session`
+Initializes or resumes a workbench session. Sets `benchbook_session` 32-byte HttpOnly cookie.
+- **Response 200**:
+  ```json
+  {
+    "workspace_id": "ws_df49ba1b434787c14c08e3cc",
+    "status": "active",
+    "created_at": "2026-09-12T16:00:00Z",
+    "expires_at": "2026-09-13T16:00:00Z",
+    "job_count": 1,
+    "max_jobs": 50,
+    "active_workspaces": 12,
+    "max_workspaces": 1000,
+    "is_new": true,
+    "authenticated": true
+  }
+  ```
+
+### `GET /api/session`
+Returns current session status, remaining job capacity, and active workspace count.
+
+---
+
+## 7. Retired Endpoints (HTTP 410 Gone)
+
+The following unscoped assistant endpoints were retired in BB-004 and return `HTTP 410 Gone`:
+- `POST /api/assistant/suggest-parts`
+- `POST /api/assistant/draft-estimate-message`
+- `POST /api/assistant/draft-pickup-notification`
+
+**Response 410**:
 ```json
 {
-  "device_kind": "BLDC Ceiling Fan",
-  "symptoms": "Motor humming loudly"
-}
-```
-
-### `POST /api/assistant/draft-estimate-message`
-```json
-{
-  "customer_name": "Senthil Nathan",
-  "device_kind": "BLDC Ceiling Fan",
-  "brand_model": "Atomberg Renesa",
-  "labor_charge_inr": 450,
-  "parts_total_inr": 280,
-  "tax_inr": 131.40,
-  "total_amount_inr": 861.40
-}
-```
-
-### `POST /api/assistant/draft-pickup-notification`
-```json
-{
-  "customer_name": "Senthil Nathan",
-  "device_kind": "BLDC Ceiling Fan",
-  "brand_model": "Atomberg Renesa",
-  "total_amount_inr": 861.40,
-  "warranty_days": 30
+  "error": "ENDPOINT_RETIRED",
+  "message": "This assistant endpoint has been retired. Use canonical owned-job advisory route POST /api/jobs/{job_id}/advice.",
+  "details": {
+    "migration": "POST /api/jobs/{job_id}/advice with payload {'operation': 'parts'|'estimate_message'|'pickup_message', 'expected_version': N}"
+  }
 }
 ```

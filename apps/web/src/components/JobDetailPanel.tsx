@@ -1,8 +1,7 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { api, ApiError } from '../api/client';
 import type {
-  AssistantDraftMessageResponse,
-  AssistantPartsSuggestionResponse,
+  AdviceResponse,
   JobDetails,
 } from '../types/benchbook';
 import { AssistantAdvisoryCard } from './AssistantAdvisoryCard';
@@ -20,10 +19,35 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Hold the exact request until a success or a definite rejection is observed.
+  const pendingMutations = useRef(new Map<string, { jobId: string; payload: unknown }>());
+  const runMutation = async <T extends object>(
+    action: string, send: (jobId: string, payload: T) => Promise<unknown>, payload: T
+  ) => {
+    let pending = pendingMutations.current.get(action);
+    if (!pending) {
+      pending = { jobId: job.job_id, payload: structuredClone({
+        ...payload, idempotency_key: crypto.randomUUID(),
+      }) };
+      pendingMutations.current.set(action, pending);
+    }
+    try {
+      await send(pending.jobId, pending.payload as T);
+      pendingMutations.current.delete(action);
+    } catch (error) {
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500
+          && ![408, 429].includes(error.status)) {
+        pendingMutations.current.delete(action);
+      }
+      throw error;
+    }
+  };
+
   // Assistant states
-  const [partsSuggestion, setPartsSuggestion] = useState<AssistantPartsSuggestionResponse | null>(null);
-  const [estimateDraft, setEstimateDraft] = useState<AssistantDraftMessageResponse | null>(null);
-  const [pickupDraft, setPickupDraft] = useState<AssistantDraftMessageResponse | null>(null);
+  const [partsAdvice, setPartsAdvice] = useState<AdviceResponse | null>(null);
+  const [estimateAdvice, setEstimateAdvice] = useState<AdviceResponse | null>(null);
+  const [pickupAdvice, setPickupAdvice] = useState<AdviceResponse | null>(null);
+  const [isAdvising, setIsAdvising] = useState(false);
 
   // Form states for transitions
   const [noteForm, setNoteForm] = useState({
@@ -40,7 +64,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     supplier_name: 'Supreme Electronics Spares, Cross Cut Road, Coimbatore',
     unit_cost_inr: 0,
     quantity: 1,
-    availability_status: 'in_stock',
+    availability_status: 'Sample / Unverified',
   });
 
   const [estimateForm, setEstimateForm] = useState({
@@ -115,7 +139,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
       }
       setErrorMsg(`[${err.error} ${err.status}] ${err.message}`);
     } else {
-      setErrorMsg(err instanceof Error ? err.message : 'Unknown error occurred');
+      setErrorMsg((err instanceof Error ? err.message : 'Connection interrupted') + '. Retry sends the original saved request.');
     }
   };
 
@@ -124,6 +148,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg(null);
+
     try {
       let measurements: Record<string, unknown> = {};
       try {
@@ -131,7 +156,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
       } catch {
         // keep empty
       }
-      await api.addTechnicianNote(job.job_id, {
+      await runMutation('technician_note', api.addTechnicianNote, {
         expected_version: job.version,
         technician_name: noteForm.technician_name,
         diagnosis_findings: noteForm.diagnosis_findings,
@@ -139,6 +164,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
         recommended_action: noteForm.recommended_action,
         test_measurements: measurements,
       });
+
       onRefresh();
     } catch (err) {
       handleActionError(err);
@@ -152,8 +178,9 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg(null);
+
     try {
-      await api.addPartsLookup(job.job_id, {
+      await runMutation('parts_lookup', api.addPartsLookup, {
         expected_version: job.version,
         parts: [
           {
@@ -168,6 +195,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
         ],
         actor_name: job.assigned_technician || 'Murugan R.',
       });
+
       onRefresh();
     } catch (err) {
       handleActionError(err);
@@ -181,13 +209,14 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg(null);
+
     try {
       const labor = Number(estimateForm.labor_charge_inr);
       const parts = Number(estimateForm.parts_total_inr);
       const tax = Number(estimateForm.tax_inr);
       const total = labor + parts + tax;
 
-      await api.createEstimate(job.job_id, {
+      await runMutation('estimate', api.createEstimate, {
         expected_version: job.version,
         labor_charge_inr: labor,
         parts_total_inr: parts,
@@ -197,6 +226,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
         notes: estimateForm.notes,
         created_by: estimateForm.created_by,
       });
+
       onRefresh();
     } catch (err) {
       handleActionError(err);
@@ -210,8 +240,9 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg(null);
+
     try {
-      await api.recordCustomerApproval(job.job_id, {
+      await runMutation('customer_approval', api.recordCustomerApproval, {
         expected_version: job.version,
         approved: approvalForm.approved,
         approved_by: approvalForm.approved_by,
@@ -221,6 +252,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
         agreed_amount_inr: Number(approvalForm.agreed_amount_inr),
         actor_type: 'technician', // HUMAN GATE
       });
+
       onRefresh();
     } catch (err) {
       handleActionError(err);
@@ -234,8 +266,9 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg(null);
+
     try {
-      await api.updateSupplierStatus(job.job_id, {
+      await runMutation('supplier_status', api.updateSupplierStatus, {
         expected_version: job.version,
         supplier_name: supplierForm.supplier_name,
         order_reference: supplierForm.order_reference,
@@ -244,6 +277,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
         tracking_notes: supplierForm.tracking_notes,
         actor_name: supplierForm.actor_name,
       });
+
       onRefresh();
     } catch (err) {
       handleActionError(err);
@@ -257,7 +291,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     setIsSubmitting(true);
     setErrorMsg(null);
     try {
-      await api.transitionRepairQueue(job.job_id, {
+      await runMutation(`queue_${targetState}`, api.transitionRepairQueue, {
         expected_version: job.version,
         target_state: targetState,
         actor_name: job.assigned_technician || 'Murugan R.',
@@ -275,6 +309,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg(null);
+
     try {
       const parts = completionForm.parts_replaced
         .split(',')
@@ -285,7 +320,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
         .map((s) => s.trim())
         .filter(Boolean);
 
-      await api.recordRepairCompletion(job.job_id, {
+      await runMutation('repair_completion', api.recordRepairCompletion, {
         expected_version: job.version,
         technician_name: completionForm.technician_name,
         actions_taken: completionForm.actions_taken,
@@ -295,6 +330,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
         technician_signature_confirmed: completionForm.technician_signature_confirmed,
         actor_type: 'technician', // HUMAN GATE
       });
+
       onRefresh();
     } catch (err) {
       handleActionError(err);
@@ -308,14 +344,16 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg(null);
+
     try {
-      await api.recordPickupNotification(job.job_id, {
+      await runMutation('pickup_notification', api.recordPickupNotification, {
         expected_version: job.version,
         channel: notificationForm.channel,
         recipient_phone: notificationForm.recipient_phone,
         message_text: notificationForm.message_text,
         sent_by_technician: notificationForm.sent_by_technician,
       });
+
       onRefresh();
     } catch (err) {
       handleActionError(err);
@@ -329,8 +367,9 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg(null);
+
     try {
-      await api.recordFollowUp(job.job_id, {
+      await runMutation('follow_up', api.recordFollowUp, {
         expected_version: job.version,
         amount_paid_inr: Number(followupForm.amount_paid_inr),
         payment_method: followupForm.payment_method,
@@ -340,6 +379,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
         feedback_rating: Number(followupForm.feedback_rating),
         recorded_by: followupForm.recorded_by,
       });
+
       onRefresh();
     } catch (err) {
       handleActionError(err);
@@ -353,13 +393,15 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg(null);
+
     try {
-      await api.recordJobClose(job.job_id, {
+      await runMutation('job_close', api.recordJobClose, {
         expected_version: job.version,
         closed_by: closeForm.closed_by,
         resolution_summary: closeForm.resolution_summary,
         actor_type: 'technician', // HUMAN GATE
       });
+
       onRefresh();
     } catch (err) {
       handleActionError(err);
@@ -368,68 +410,58 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
     }
   };
 
-  // Assistant triggers
+  // Canonical advisory triggers via POST /api/jobs/{job_id}/advice
   const triggerPartsSuggestion = async () => {
     try {
-      const res = await api.assistantSuggestParts({
-        device_kind: job.device_kind,
-        symptoms: job.intake_symptoms,
+      setIsAdvising(true);
+      setErrorMsg(null);
+      const res = await api.getJobAdvice(job.job_id, {
+        operation: 'parts',
+        expected_version: job.version,
       });
-      setPartsSuggestion(res);
-      if (res.suggestions.length > 0) {
-        const top = res.suggestions[0];
-        setPartsForm((prev) => ({
-          ...prev,
-          part_name: top.part_name,
-          part_number: top.part_number || '',
-          supplier_name: top.supplier_name || prev.supplier_name,
-          unit_cost_inr: top.unit_cost_inr,
-        }));
+      if (res.job_id === job.job_id) {
+        setPartsAdvice(res);
       }
     } catch (err) {
       handleActionError(err);
+    } finally {
+      setIsAdvising(false);
     }
   };
 
   const triggerEstimateDraft = async () => {
     try {
-      const labor = Number(estimateForm.labor_charge_inr);
-      const parts = Number(estimateForm.parts_total_inr);
-      const tax = Number(estimateForm.tax_inr);
-      const total = labor + parts + tax;
-
-      const res = await api.assistantDraftEstimateMessage({
-        customer_name: job.customer_name,
-        device_kind: job.device_kind,
-        brand_model: job.brand_model,
-        labor_charge_inr: labor,
-        parts_total_inr: parts,
-        tax_inr: tax,
-        total_amount_inr: total,
-        promised_date: estimateForm.promised_delivery_date,
+      setIsAdvising(true);
+      setErrorMsg(null);
+      const res = await api.getJobAdvice(job.job_id, {
+        operation: 'estimate_message',
+        expected_version: job.version,
       });
-      setEstimateDraft(res);
+      if (res.job_id === job.job_id) {
+        setEstimateAdvice(res);
+      }
     } catch (err) {
       handleActionError(err);
+    } finally {
+      setIsAdvising(false);
     }
   };
 
   const triggerPickupDraft = async () => {
     try {
-      const res = await api.assistantDraftPickupNotification({
-        customer_name: job.customer_name,
-        device_kind: job.device_kind,
-        brand_model: job.brand_model,
-        total_amount_inr: details.estimate?.total_amount_inr || 944,
-        warranty_days: 30,
+      setIsAdvising(true);
+      setErrorMsg(null);
+      const res = await api.getJobAdvice(job.job_id, {
+        operation: 'pickup_message',
+        expected_version: job.version,
       });
-      setPickupDraft(res);
-      setNotificationForm((prev) => ({
-        ...prev,
-        message_text: res.message_text,
-      }));
+      if (res.job_id === job.job_id) {
+        setPickupAdvice(res);
+      }
     } catch (err) {
       handleActionError(err);
+    } finally {
+      setIsAdvising(false);
     }
   };
 
@@ -570,24 +602,67 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
                   <p style={{ fontSize: '0.875rem', color: 'var(--slate-600)' }}>
                     Record parts needed. You can ask the advisory assistant for local Tamil Nadu parts suggestions.
                   </p>
-                  <button type="button" onClick={triggerPartsSuggestion} className="btn btn-secondary">
-                    🤖 Ask Assistant for Parts Suggestions
+                  <button
+                    type="button"
+                    onClick={triggerPartsSuggestion}
+                    disabled={isSubmitting || isAdvising}
+                    className="btn btn-secondary"
+                  >
+                    {isAdvising ? '🤖 Consulting Strands...' : '🤖 Ask Assistant for Parts Suggestions'}
                   </button>
                 </div>
 
-                {partsSuggestion && (
-                  <AssistantAdvisoryCard title="Spare Parts Suggestions" provenance={partsSuggestion.provenance}>
-                    <p style={{ marginBottom: '0.5rem' }}>
-                      Based on symptoms <em>"{partsSuggestion.symptoms_analyzed}"</em>, the following parts are commonly required:
+                {partsAdvice && (
+                  <AssistantAdvisoryCard
+                    title="Spare Parts Advisory"
+                    provenance={partsAdvice.provenance}
+                    isStale={job.version > partsAdvice.source_version}
+                  >
+                    <p style={{ marginBottom: '0.5rem', fontWeight: 500 }}>
+                      {partsAdvice.summary}
                     </p>
-                    <ul style={{ paddingLeft: '1.25rem', marginBottom: '0.5rem' }}>
-                      {partsSuggestion.suggestions.map((p, idx) => (
-                        <li key={idx} style={{ marginBottom: '0.35rem' }}>
-                          <strong>{p.part_name}</strong> ({p.part_number}) — Est. ₹{p.unit_cost_inr} ({p.supplier_name})
-                          <div style={{ fontSize: '0.75rem', color: 'var(--slate-600)' }}>{p.relevance_reason}</div>
-                        </li>
-                      ))}
-                    </ul>
+                    {partsAdvice.suggested_parts.length > 0 ? (
+                      <ul style={{ paddingLeft: '1.25rem', marginBottom: '0.5rem' }}>
+                        {partsAdvice.suggested_parts.map((p, idx) => (
+                          <li key={idx} style={{ marginBottom: '0.5rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <div>
+                                <strong>{p.part_name}</strong> ({p.part_id}) — Est. ₹{p.unit_cost_inr}
+                                <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: '#047857', backgroundColor: '#d1fae5', padding: '0.1rem 0.35rem', borderRadius: '3px' }}>
+                                  {p.availability}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem' }}
+                                disabled={job.version !== partsAdvice.source_version || partsAdvice.job_id !== job.job_id}
+                                title={job.version !== partsAdvice.source_version ? 'Cannot use stale advice. Please refresh advice.' : undefined}
+                                onClick={() => {
+                                  setPartsForm((prev) => ({
+                                    ...prev,
+                                    part_name: p.part_name,
+                                    part_number: p.part_id,
+                                    unit_cost_inr: p.unit_cost_inr,
+                                  supplier_name: p.supplier,
+                                  availability_status: p.availability,
+                                  }));
+                                }}
+                              >
+                                ✍️ Use in Form
+                              </button>
+                            </div>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--slate-600)', marginTop: '0.15rem' }}>
+                              {p.rationale}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p style={{ fontSize: '0.8rem', color: 'var(--slate-600)' }}>
+                        No specific replacement parts suggested for this diagnostic symptom.
+                      </p>
+                    )}
                   </AssistantAdvisoryCard>
                 )}
 
@@ -651,18 +726,8 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
                   <p style={{ fontSize: '0.875rem', color: 'var(--slate-600)' }}>
                     Calculate labor, parts total, and tax to prepare customer estimate.
                   </p>
-                  <button type="button" onClick={triggerEstimateDraft} className="btn btn-secondary">
-                    🤖 Draft WhatsApp Estimate Message
-                  </button>
-                </div>
 
-                {estimateDraft && (
-                  <AssistantAdvisoryCard title="Customer WhatsApp Estimate Draft" provenance={estimateDraft.provenance}>
-                    <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: '0.825rem' }}>
-                      {estimateDraft.message_text}
-                    </pre>
-                  </AssistantAdvisoryCard>
-                )}
+                </div>
 
                 <form onSubmit={submitEstimate}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
@@ -687,7 +752,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
                       />
                     </div>
                     <div className="form-group">
-                      <label className="form-label">GST Tax (18% ₹)</label>
+                      <label className="form-label">Tax (₹)</label>
                       <input
                         type="number"
                         className="form-input"
@@ -721,6 +786,32 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
             {/* 4. ESTIMATE PENDING -> CUSTOMER APPROVAL (HUMAN GATE) */}
             {job.current_state === 'estimate_pending' && (
               <div>
+                  <button
+                    type="button"
+                    onClick={triggerEstimateDraft}
+                    disabled={isSubmitting || isAdvising}
+                    className="btn btn-secondary"
+                  >
+                    {isAdvising ? '🤖 Consulting Strands...' : '🤖 Draft WhatsApp Estimate Message'}
+                  </button>
+                {estimateAdvice && (
+                  <AssistantAdvisoryCard
+                    title="WhatsApp Estimate Draft"
+                    provenance={estimateAdvice.provenance}
+                    isStale={job.version > estimateAdvice.source_version}
+                  >
+                    <p style={{ marginBottom: '0.5rem', fontWeight: 500 }}>
+                      {estimateAdvice.summary}
+                    </p>
+                    {estimateAdvice.draft_message && (
+                      <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: '0.825rem', backgroundColor: '#f8fafc', padding: '0.5rem', borderRadius: '4px' }}>
+                        {estimateAdvice.draft_message}
+                      </pre>
+                    )}
+                  </AssistantAdvisoryCard>
+                )}
+
+
                 <div className="human-gate-banner">
                   <span>🔒</span>
                   <span>
@@ -968,18 +1059,49 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                   <p style={{ fontSize: '0.875rem', color: 'var(--slate-600)' }}>
-                    Repair complete! Notify customer via WhatsApp or SMS that device is ready for pickup.
+                    Repair complete. Prepare a pickup draft, then record any notification you performed separately. Benchbook sends no messages.
                   </p>
-                  <button type="button" onClick={triggerPickupDraft} className="btn btn-secondary">
-                    🤖 Draft WhatsApp Pickup Notification
+                  <button
+                    type="button"
+                    onClick={triggerPickupDraft}
+                    disabled={isSubmitting || isAdvising}
+                    className="btn btn-secondary"
+                  >
+                    {isAdvising ? '🤖 Consulting Strands...' : '🤖 Draft WhatsApp Pickup Notification'}
                   </button>
                 </div>
 
-                {pickupDraft && (
-                  <AssistantAdvisoryCard title="Customer WhatsApp Pickup Draft" provenance={pickupDraft.provenance}>
-                    <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: '0.825rem' }}>
-                      {pickupDraft.message_text}
-                    </pre>
+                {pickupAdvice && (
+                  <AssistantAdvisoryCard
+                    title="WhatsApp Pickup Draft"
+                    provenance={pickupAdvice.provenance}
+                    isStale={job.version > pickupAdvice.source_version}
+                  >
+                    <p style={{ marginBottom: '0.5rem', fontWeight: 500 }}>
+                      {pickupAdvice.summary}
+                    </p>
+                    {pickupAdvice.draft_message && (
+                      <div>
+                        <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: '0.825rem', backgroundColor: '#f8fafc', padding: '0.5rem', borderRadius: '4px' }}>
+                          {pickupAdvice.draft_message}
+                        </pre>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ marginTop: '0.4rem', fontSize: '0.75rem' }}
+                          disabled={job.version !== pickupAdvice.source_version || pickupAdvice.job_id !== job.job_id}
+                          title={job.version !== pickupAdvice.source_version ? 'Cannot use stale advice. Please refresh advice.' : undefined}
+                          onClick={() => {
+                            setNotificationForm((prev) => ({
+                              ...prev,
+                              message_text: pickupAdvice.draft_message || prev.message_text,
+                            }));
+                          }}
+                        >
+                          ✍️ Use Draft in Form
+                        </button>
+                      </div>
+                    )}
                   </AssistantAdvisoryCard>
                 )}
 
@@ -1019,7 +1141,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({ details, onRefre
                   </div>
 
                   <button type="submit" disabled={isSubmitting} className="btn btn-primary">
-                    {isSubmitting ? 'Logging Notification...' : 'Send / Log Notification to Customer'}
+                    {isSubmitting ? 'Logging Notification...' : 'Record Customer Notification (No Message Sent)'}
                   </button>
                 </form>
               </div>
