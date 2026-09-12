@@ -6,7 +6,7 @@ Date: 2026-09-12
 
 - App: https://web-eight-phi-69.vercel.app
 - Readiness: https://web-eight-phi-69.vercel.app/api/ready
-- Repository: https://github.com/AtchayamG/benchbook (main, commit `4ee4bf3`)
+- Repository: https://github.com/AtchayamG/benchbook (main, commit `d0d112f`)
 
 ## Evidence
 
@@ -16,6 +16,8 @@ Date: 2026-09-12
 - The UI showed the PostgreSQL badge, workspace isolation count, advisory-only label, and human approval locks.
 - Local browser review exercised the Strands-shaped fake transport, grounded parts advisory, estimate persistence, and approval gate.
 - A separate browser workspace saw no jobs from the first workspace during the local isolation review.
+- Production regression check created two fresh cookie sessions and seeded both successfully (`201`/`201`); the second workspace received collision-safe numbers `BB-2026-101-5d50f1` through `BB-2026-104-5d50f1` instead of a duplicate-key `500`.
+- Vercel production logs for the regression check contain four successful requests and no exception entries.
 
 ## Honest boundaries
 
