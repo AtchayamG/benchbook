@@ -16,4 +16,4 @@ RUN pip install --no-cache-dir -e /app/services/repair_service
 
 EXPOSE 8001
 
-CMD ["uvicorn", "benchbook.interfaces.http.app:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["sh", "-c", "exec uvicorn benchbook.interfaces.http.app:app --host 0.0.0.0 --port ${PORT:-8001}"]

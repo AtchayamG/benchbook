@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 
 from benchbook.domain.models import (
     ActorType,
@@ -33,6 +33,7 @@ from benchbook.interfaces.http.schemas import (
     RepairCompletionRequest,
     RepairQueueTransitionRequest,
     SupplierStatusRequest,
+    resolve_idempotency_key,
 )
 
 router = APIRouter(prefix="/jobs/{job_id}", tags=["Workflow Transitions"])
@@ -42,10 +43,8 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def get_store() -> SqliteRepairJobStore:
-    from benchbook.interfaces.http.app import store_instance
-
-    return store_instance
+def get_store(request: Request) -> SqliteRepairJobStore:
+    return cast(SqliteRepairJobStore, request.app.state.store)
 
 
 @router.post("/technician-note")
@@ -56,10 +55,7 @@ def add_technician_note(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Record technician diagnosis and findings (advances state to diagnosis)."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     note = TechnicianNote(
         note_id=str(uuid4()),
@@ -77,15 +73,13 @@ def add_technician_note(
         expected_version=payload.expected_version,
         actor_name=payload.technician_name,
         idempotency_key=effective_idempotency,
+        payload=payload,
     )
 
-    result = {
+    return {
         "technician_note": created_note.model_dump(),
         "job": updated_job.model_dump(),
     }
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job_id, "technician_note", result)
-    return result
 
 
 @router.post("/parts-lookup")
@@ -96,10 +90,7 @@ def add_parts_lookup(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Record parts required or suggested for the repair."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     now = _now_iso()
     parts = [
@@ -126,15 +117,13 @@ def add_parts_lookup(
         actor_type=actor_type,
         actor_name=payload.actor_name,
         idempotency_key=effective_idempotency,
+        payload=payload,
     )
 
-    result = {
+    return {
         "parts": [p.model_dump() for p in saved_parts],
         "job": updated_job.model_dump(),
     }
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job_id, "parts_lookup", result)
-    return result
 
 
 @router.post("/estimate")
@@ -145,10 +134,7 @@ def create_estimate(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Generate repair cost estimate (advances state to estimate_pending)."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     estimate = Estimate(
         estimate_id=str(uuid4()),
@@ -168,15 +154,13 @@ def create_estimate(
         expected_version=payload.expected_version,
         actor_name=payload.created_by,
         idempotency_key=effective_idempotency,
+        payload=payload,
     )
 
-    result = {
+    return {
         "estimate": created_est.model_dump(),
         "job": updated_job.model_dump(),
     }
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job_id, "estimate", result)
-    return result
 
 
 @router.post("/customer-approval")
@@ -187,10 +171,7 @@ def record_customer_approval(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Record customer approval or decline. STRICT HUMAN GATE: Assistant cannot execute."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     actor_type = ActorType(payload.actor_type.lower())
 
@@ -212,15 +193,13 @@ def record_customer_approval(
         actor_type=actor_type,
         actor_name=payload.recorded_by_technician,
         idempotency_key=effective_idempotency,
+        payload=payload,
     )
 
-    result = {
+    return {
         "customer_approval": created_appr.model_dump(),
         "job": updated_job.model_dump(),
     }
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job_id, "customer_approval", result)
-    return result
 
 
 @router.post("/supplier-status")
@@ -231,10 +210,7 @@ def update_supplier_status(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Update supplier order status for required repair parts."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     status_obj = SupplierStatus(
         status_id=str(uuid4()),
@@ -252,15 +228,13 @@ def update_supplier_status(
         expected_version=payload.expected_version,
         actor_name=payload.actor_name,
         idempotency_key=effective_idempotency,
+        payload=payload,
     )
 
-    result = {
+    return {
         "supplier_status": created_stat.model_dump(),
         "job": updated_job.model_dump(),
     }
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job_id, "supplier_status", result)
-    return result
 
 
 @router.post("/repair-queue")
@@ -271,10 +245,7 @@ def transition_repair_queue(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Transition job to repair_queue or start repair_in_progress."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     target = JobState(payload.target_state)
     updated_job = store.transition_repair_queue(
@@ -283,12 +254,10 @@ def transition_repair_queue(
         expected_version=payload.expected_version,
         actor_name=payload.actor_name,
         idempotency_key=effective_idempotency,
+        payload=payload,
     )
 
-    result = {"job": updated_job.model_dump()}
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job_id, "repair_queue", result)
-    return result
+    return {"job": updated_job.model_dump()}
 
 
 @router.post("/repair-completion")
@@ -299,10 +268,7 @@ def record_repair_completion(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Sign off repair completion and QC tests. STRICT HUMAN GATE: Assistant cannot execute."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     actor_type = ActorType(payload.actor_type.lower())
 
@@ -324,15 +290,13 @@ def record_repair_completion(
         actor_type=actor_type,
         actor_name=payload.technician_name,
         idempotency_key=effective_idempotency,
+        payload=payload,
     )
 
-    result = {
+    return {
         "repair_completion": created_comp.model_dump(),
         "job": updated_job.model_dump(),
     }
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job_id, "repair_completion", result)
-    return result
 
 
 @router.post("/pickup-notification")
@@ -343,10 +307,7 @@ def record_pickup_notification(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Log pickup notification sent to customer (advances state to ready_for_pickup)."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     notification = PickupNotification(
         notification_id=str(uuid4()),
@@ -363,15 +324,13 @@ def record_pickup_notification(
         expected_version=payload.expected_version,
         actor_name=payload.sent_by_technician,
         idempotency_key=effective_idempotency,
+        payload=payload,
     )
 
-    result = {
+    return {
         "pickup_notification": created_notif.model_dump(),
         "job": updated_job.model_dump(),
     }
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job_id, "pickup_notification", result)
-    return result
 
 
 @router.post("/follow-up")
@@ -382,10 +341,7 @@ def record_follow_up(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Record customer device handover, payment receipt, and warranty terms."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     followup = FollowUpRecord(
         followup_id=str(uuid4()),
@@ -406,15 +362,13 @@ def record_follow_up(
         expected_version=payload.expected_version,
         actor_name=payload.recorded_by,
         idempotency_key=effective_idempotency,
+        payload=payload,
     )
 
-    result = {
+    return {
         "follow_up": created_fol.model_dump(),
         "job": updated_job.model_dump(),
     }
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job_id, "follow_up", result)
-    return result
 
 
 @router.post("/close")
@@ -425,10 +379,7 @@ def record_job_close(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Final closure of the repair job. STRICT HUMAN GATE: Assistant cannot execute."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     actor_type = ActorType(payload.actor_type.lower())
 
@@ -446,12 +397,10 @@ def record_job_close(
         actor_type=actor_type,
         actor_name=payload.closed_by,
         idempotency_key=effective_idempotency,
+        payload=payload,
     )
 
-    result = {
+    return {
         "job_close": created_close.model_dump(),
         "job": updated_job.model_dump(),
     }
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job_id, "job_close", result)
-    return result

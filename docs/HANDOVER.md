@@ -1,7 +1,58 @@
-## Latest worker return: BB-002 Benchbook Release Readiness and Zero-Spend Deployment Path (2026-09-12)
+## Codex review complete — 2026-09-12
+
+BB-003 ACCEPTED for local transactional correctness and configuration after Codex corrections. Independent: 66 backend tests (real PostgreSQL included), 9 frontend tests, build/lint/typing pass. Public hosting and real Strands remain pending. Read BB-003_CODEX_REVIEW.md for evidence and limits.
+
+## Latest worker return: BB-003 Transactional Correctness and Real PostgreSQL Release Evidence (2026-09-12)
+
+TASK_ID: BB-003
+STATUS: READY_FOR_REVIEW
+WORKER: AGY, senior backend/full-stack developer
+MODEL: Gemini 3.8 Flash High
+EFFORT: HIGH
+BRANCH: worker/agy/BB-003
+BASE_COMMIT: 805d88f
+PROPOSED_COMMIT_MSG: feat(benchbook): transactional mutation locking and real postgresql release evidence (BB-003)
+
+Read `docs/BB-003_ACCEPTANCE.md`. Continued repository for Project 2 (Benchbook) at:
+`D:\Work\Codex\Hackathon Projects\Agents For Humans\02_BENCHBOOK`
+
+Key Deliverables:
+1. **Transactional Boundaries & Locking**:
+   - `_get_and_lock_job`: PostgreSQL `SELECT ... FOR UPDATE` row locks, SQLite `BEGIN IMMEDIATE` write locks.
+   - Conditional atomic updates `WHERE job_id = ? AND version = ?` with `assert cur.rowcount == 1`.
+   - Single-transaction atomic commit: child records, state/version update, audit trail, and idempotency records commit in one transaction with zero-orphan complete rollback on failure.
+2. **Robust Idempotency & Hashing**:
+   - Canonical payload hashing (`canonical_payload_hash`) via SHA-256 over sorted keys excluding idempotency key.
+   - Replay committed response for identical payloads; return HTTP 409 `IDEMPOTENCY_CONFLICT` on altered payloads without modifying database state or leaking prior data.
+   - Header vs. body key resolution (`resolve_idempotency_key`) enforces agreement; returns HTTP 422 `VALIDATION_ERROR` on mismatch.
+   - PostgreSQL advisory transaction locking (`pg_advisory_xact_lock`) cleanly serializes identical-key concurrent requests.
+   - Safe, non-destructive schema evolution in `init_db` for pre-existing SQLite and PostgreSQL databases.
+3. **Real Disposable PostgreSQL 16.10 Evidence**:
+   - Reused local read-only binaries from `00_PROGRAM_CONTROL/worktrees/BS-011-claude/.pgtest/pgsql/bin` on ephemeral loopback ports.
+   - Full 19-step smoke lifecycle, two-connection contention, identical-key races, changed-payload conflicts, rollback, and restart durability verified on both engines (`tests/test_transactional_concurrency.py`).
+4. **Deployment & Environment Hardening**:
+   - `Dockerfile` honors platform-injected `$PORT`.
+   - Production settings validation forbidding SQLite in production (`BENCHBOOK_ENVIRONMENT=production`).
+   - `/api/health` and `/api/ready` report actual injected database engine.
+5. **Verification**:
+   - Backend pytest: 53 passed in 14.9s (0 skipped).
+   - Frontend vitest: 9 passed in 274ms (0 skipped).
+   - Ruff check & format: clean across 33 source files.
+   - Strict Mypy: clean across 33 source files.
+   - Frontend tsc & eslint: clean (0 errors, 0 warnings).
+   - Production bundle built in 489ms.
+   - Release smoke script: 19/19 checks passed on both SQLite and PostgreSQL.
+   - Personal spend: Exactly â‚¹0.00.
+
+NEXT_CODEX_MODE: ASTRA_HIGH
+REASON: BB-003 is fully implemented, hardened, and verified with real PostgreSQL 16.10 evidence; ready for Codex review.
+
+---
+
+## BB-002 Benchbook Release Readiness and Zero-Spend Deployment Path (2026-09-12)
 
 TASK_ID: BB-002
-STATUS: READY_FOR_REVIEW
+STATUS: CHANGES_REQUIRED (BB-002 review; superseded by BB-003)
 WORKER: AGY, senior full-stack developer
 MODEL: Gemini 3.8 Flash High
 EFFORT: HIGH
@@ -32,7 +83,7 @@ Key Deliverables:
    - Strict Mypy: clean across 31 source files.
    - Frontend tsc & eslint: clean (0 errors, 0 warnings).
    - Production bundle built in 848ms.
-   - Personal spend: Exactly ₹0.00.
+   - Personal spend: Exactly â‚¹0.00.
    - Deployment status: `BLOCKED_INFRA` (waiting on hosted credentials).
 
 NEXT_CODEX_MODE: ASTRA_HIGH
@@ -72,7 +123,7 @@ Key Deliverables:
    - 7 frontend vitest tests passing in 204ms (0 skipped).
    - `ruff check`, `ruff format --check`, and strict `mypy` clean across 26 source files.
    - `tsc --noEmit`, `eslint . --max-warnings 0`, and `vite build` clean (bundle built in 550ms).
-   - ₹0.00 spend strictly maintained.
+   - â‚¹0.00 spend strictly maintained.
 
 NEXT_CODEX_MODE: ASTRA_HIGH
 REASON: BB-001 is complete, verified across frontend and backend; ready for Codex review.

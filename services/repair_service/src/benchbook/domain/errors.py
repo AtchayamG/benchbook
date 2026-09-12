@@ -67,6 +67,15 @@ class ValidationError(BenchbookError):
     """Raised when domain validation rules are violated."""
 
 
+class IdempotencyConflictError(BenchbookError):
+    """Raised when an idempotency key is reused with a different request payload or operation."""
+
+    def __init__(self, message: str, idempotency_key: str | None = None) -> None:
+        details = {"idempotency_key": idempotency_key} if idempotency_key else {}
+        super().__init__(message, details)
+        self.idempotency_key = idempotency_key
+
+
 class AssistantError(BenchbookError):
     """Base error for assistant adapter failures."""
 

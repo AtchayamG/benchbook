@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from benchbook.config import settings
 from benchbook.infrastructure.sqlite_store import SqliteRepairJobStore
@@ -12,10 +12,8 @@ from benchbook.infrastructure.sqlite_store import SqliteRepairJobStore
 router = APIRouter(tags=["Health"])
 
 
-def get_store() -> SqliteRepairJobStore:
-    from benchbook.interfaces.http.app import store_instance
-
-    return store_instance
+def get_store(request: Request) -> SqliteRepairJobStore:
+    return cast(SqliteRepairJobStore, request.app.state.store)
 
 
 @router.get("/health")
@@ -29,7 +27,7 @@ def health_check(store: SqliteRepairJobStore = Depends(get_store)) -> dict[str, 
         "milestone": settings.milestone,
         "environment": settings.environment,
         "database": {
-            "engine": settings.db_engine_name,
+            "engine": store.engine_name,
             "status": "connected" if db_connected else "disconnected",
         },
         "shop": {
@@ -58,7 +56,7 @@ def readiness_check(store: SqliteRepairJobStore = Depends(get_store)) -> dict[st
     return {
         "status": "ready",
         "database": {
-            "engine": settings.db_engine_name,
+            "engine": store.engine_name,
             "status": "connected",
         },
     }

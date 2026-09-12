@@ -13,6 +13,7 @@ from benchbook.domain.errors import (
     AssistantTimeoutError,
     AssistantUnavailableError,
     HumanApprovalRequiredError,
+    IdempotencyConflictError,
     InvalidStateTransitionError,
     JobNotFoundError,
     StateConflictError,
@@ -50,6 +51,8 @@ def create_app(
         description="Professional Repair Shop Workflow & Advisory Engine",
         version="0.2.0",
     )
+    app.state.store = store_instance
+    app.state.assistant = assistant_instance
 
     # CORS configuration
     app.add_middleware(
@@ -86,6 +89,19 @@ def create_app(
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content={"error": "STATE_CONFLICT", "message": exc.message, "details": exc.details},
+        )
+
+    @app.exception_handler(IdempotencyConflictError)
+    async def handle_idempotency_conflict(
+        request: Request, exc: IdempotencyConflictError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": "IDEMPOTENCY_CONFLICT",
+                "message": exc.message,
+                "details": exc.details,
+            },
         )
 
     @app.exception_handler(HumanApprovalRequiredError)

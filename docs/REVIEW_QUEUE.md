@@ -1,7 +1,52 @@
-## Latest: BB-002 Benchbook Release Readiness and Zero-Spend Deployment Path (2026-09-12)
+## Codex review complete — 2026-09-12
+
+BB-003 ACCEPTED for local transactional correctness and configuration after Codex corrections. Independent: 66 backend tests (real PostgreSQL included), 9 frontend tests, build/lint/typing pass. Public hosting and real Strands remain pending. Read BB-003_CODEX_REVIEW.md for evidence and limits.
+
+## Latest: BB-003 Transactional Correctness and Real PostgreSQL Release Evidence (2026-09-12)
+
+TASK_ID: BB-003
+STATUS: READY_FOR_REVIEW
+WORKER: AGY, senior backend/full-stack developer
+MODEL: Gemini 3.8 Flash High
+EFFORT: HIGH
+BRANCH: worker/agy/BB-003
+BASE_COMMIT: 805d88f
+PROPOSED_COMMIT_MSG: feat(benchbook): transactional mutation locking and real postgresql release evidence (BB-003)
+
+Implemented and verified transactional mutation boundaries, robust idempotency, and real disposable PostgreSQL 16.10 tests for Project 2 (Benchbook) at:
+`D:\Work\Codex\Hackathon Projects\Agents For Humans\02_BENCHBOOK`
+
+Key achievements & verifications:
+- Strict Transactional Boundaries: `SELECT ... FOR UPDATE` row locks on PostgreSQL, `BEGIN IMMEDIATE` write locks on SQLite, atomic conditional updates `WHERE job_id = ? AND version = ?`, single-transaction commits, automatic complete rollback on failure.
+- Robust Idempotency: Canonical SHA-256 request payload hashing, replay on matching payload, 409 `IDEMPOTENCY_CONFLICT` on altered payload, header vs. body agreement enforcement (422 `VALIDATION_ERROR` on mismatch), PostgreSQL advisory transaction locking, non-destructive schema evolution.
+- Real Disposable PostgreSQL 16.10 Evidence: Reused local read-only binaries from `00_PROGRAM_CONTROL/worktrees/BS-011-claude/.pgtest/pgsql/bin` on ephemeral loopback ports. Verified 19-step smoke lifecycle, two-connection contention, identical-key races, changed-payload conflicts, rollback, and restart durability on both engines.
+- Deployment & Environment Hardening: `Dockerfile` `$PORT` injection, production settings validation forbidding SQLite, `/api/health` and `/api/ready` reporting actual store engine.
+- Automated Verification:
+  - Pytest: 53 passed in 14.9s.
+  - Ruff check & format: clean (33 source files).
+  - Strict Mypy: clean (33 source files).
+  - Frontend vitest: 9 passed in 274ms; lint clean; build clean.
+  - Smoke script: 19/19 passed on SQLite and PostgreSQL.
+  - Personal spend: Exactly â‚¹0.00.
+
+Documentation:
+- `docs/BB-003_ACCEPTANCE.md`
+- `docs/TASKSTATUS.md`
+- `docs/HANDOVER.md`
+- `docs/TEST_STATUS.md`
+- `docs/REVIEW_QUEUE.md`
+- `docs/API_CONTRACT.md`
+- `README.md`
+
+NEXT_CODEX_MODE: ASTRA_HIGH
+REASON: BB-003 is fully implemented, hardened, and verified with real PostgreSQL 16.10 evidence; ready for Codex review.
+
+---
+
+## BB-002 Benchbook Release Readiness and Zero-Spend Deployment Path (2026-09-12)
 
 TASK_ID: BB-002
-STATUS: READY_FOR_REVIEW
+STATUS: CHANGES_REQUIRED (BB-002 review; superseded by BB-003)
 WORKER: AGY, senior full-stack developer
 MODEL: Gemini 3.8 Flash High
 EFFORT: HIGH
@@ -26,7 +71,7 @@ Key achievements & verifications:
   - Frontend tsc & eslint: clean (0 errors, 0 warnings).
   - Production build: clean (848ms).
   - Smoke script: 17/17 passed.
-  - Personal spend: Exactly ₹0.00.
+  - Personal spend: Exactly â‚¹0.00.
   - Deployment status: `BLOCKED_INFRA` (waiting on hosted credentials).
 
 Documentation:
@@ -72,7 +117,7 @@ Key achievements & verifications:
 - Advisory Assistant Adapter:
   - Deterministic offline rules with explicit provenance (engine, model, timestamp, advisory_only: true).
   - Testable honest failure modes: timeout (504), busy (429), unavailable (503), invalid_output (502).
-  - Bounded Strands integration seam (zero live network calls, ₹0.00 spend).
+  - Bounded Strands integration seam (zero live network calls, â‚¹0.00 spend).
 - Frontend Workbench (apps/web):
   - React 18 + Vite SPA with English-first accessible UI.
   - Visual 11-stage WorkflowTimeline, left bench job list, active step action form, and real-time audit stream.
@@ -84,7 +129,7 @@ Key achievements & verifications:
   - Mypy: clean (strict mode, 26 source files).
   - Frontend tsc typecheck & eslint: clean (0 errors, 0 warnings).
   - Frontend build: clean production bundle generated in 550ms.
-- Personal spend: Exactly ₹0.00.
+- Personal spend: Exactly â‚¹0.00.
 
 Documentation:
 - `docs/BB-001_ACCEPTANCE.md`

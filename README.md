@@ -44,19 +44,20 @@ Benchbook is **Project 2** of the **Agents for Humans** program. It is an indepe
 │   ├── ARCHITECTURE.md                # System architecture & invariants
 │   ├── BB-001_ACCEPTANCE.md           # Formal BB-001 acceptance criteria report
 │   ├── BB-002_ACCEPTANCE.md           # Formal BB-002 release readiness report
+│   ├── BB-003_ACCEPTANCE.md           # Formal BB-003 transactional & PostgreSQL evidence
 │   ├── HANDOVER.md                    # Operational handover instructions
 │   ├── REVIEW_QUEUE.md                # Review checkpoint queue
 │   ├── TASKSTATUS.md                  # Milestone status tracking
 │   └── TEST_STATUS.md                 # Verification test results & commands
 ├── scripts/
-│   └── release_smoke.py               # Deterministic 17-point release smoke script
+│   └── release_smoke.py               # Deterministic 19-point release smoke script
 ├── services/
 │   └── repair_service/                # Python / FastAPI Backend
 │       ├── src/benchbook/
 │       │   ├── domain/                # Models, enums, errors, workflow engine
 │       │   ├── infrastructure/        # SQLite WAL / PostgreSQL store, adapter, seeds
 │       │   └── interfaces/http/       # FastAPI app & route handlers
-│       ├── tests/                     # 9 pytest test suites (37 tests)
+│       ├── tests/                     # 11 pytest test suites (53 tests)
 │       └── pyproject.toml             # Ruff, mypy, pytest configs
 ├── Dockerfile                         # Production multi-stage Python container
 ├── Procfile                           # PaaS process launcher
@@ -166,7 +167,7 @@ Benchbook is engineered for production deployment across free-tier providers wit
 ### Backend Verification
 From `services/repair_service`:
 ```bash
-# Run pytest test suite (37 tests across 9 files)
+# Run pytest test suite (53 tests across 11 files, including real PostgreSQL 16.10 tests)
 pytest -v
 
 # Run Ruff linter & format checker
@@ -176,7 +177,7 @@ ruff format --check . ../../scripts
 # Run strict type checking with Mypy
 mypy --explicit-package-bases src tests ../../scripts
 ```
-*Result: 37/37 passed (1.22s), 0 lint errors, 0 format issues, 0 type errors across 31 source files.*
+*Result: 53/53 passed (14.9s), 0 lint errors, 0 format issues, 0 type errors across 33 source files.*
 
 ### Frontend Verification
 From `apps/web`:

@@ -6,6 +6,21 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from benchbook.domain.errors import ValidationError
+
+
+def resolve_idempotency_key(header_key: str | None, body_key: str | None) -> str | None:
+    """Resolve idempotency key between header and body.
+
+    If both are provided, they must be identical; otherwise raises ValidationError.
+    """
+    if header_key is not None and body_key is not None and header_key != body_key:
+        raise ValidationError(
+            "Idempotency-Key header and request body idempotency_key must match.",
+            {"header_key": header_key, "body_key": body_key},
+        )
+    return header_key or body_key
+
 
 class CreateJobRequest(BaseModel):
     """Payload for registering a new intake job."""

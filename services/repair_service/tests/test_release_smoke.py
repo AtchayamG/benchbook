@@ -14,7 +14,7 @@ from scripts.release_smoke import SmokeClient, run_smoke_verification  # noqa: E
 
 
 def test_full_release_smoke_suite() -> None:
-    """Run all 17 release smoke verification checks end-to-end."""
+    """Run all 19 release smoke verification checks end-to-end."""
     client = SmokeClient()
     try:
         run_smoke_verification(client)

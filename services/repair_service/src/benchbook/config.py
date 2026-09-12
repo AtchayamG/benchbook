@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Self
+from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,6 +57,46 @@ class Settings(BaseSettings):
         if v.startswith("postgres://"):
             return "postgresql://" + v[len("postgres://") :]
         return v
+
+    @model_validator(mode="after")
+    def validate_production_settings(self) -> Self:
+        """Enforce strict configuration rules in production:
+        1. No silent SQLite fallback: must be valid postgresql:// URL.
+        2. Production CORS origins cannot be empty or restricted to localhost/127.0.0.1.
+        """
+        if self.environment.lower() in ("production", "prod"):
+            if (
+                not (
+                    self.database_url.startswith("postgresql://")
+                    or self.database_url.startswith("postgres://")
+                )
+                or not urlsplit(self.database_url).hostname
+                or urlsplit(self.database_url).path in ("", "/")
+            ):
+                raise ValueError(
+                    "Production environment requires a valid PostgreSQL database URL (postgresql://...); "
+                    "silent fallback to SQLite is forbidden."
+                )
+            origins = self.cors_origins
+            if not origins:
+                raise ValueError(
+                    "Production environment requires explicit CORS origins; cannot be empty."
+                )
+            for origin in origins:
+                parsed = urlsplit(origin)
+                if (
+                    parsed.scheme != "https"
+                    or not parsed.hostname
+                    or "*" in origin
+                    or parsed.hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+                    or parsed.username is not None
+                    or parsed.password is not None
+                    or parsed.path
+                    or parsed.query
+                    or parsed.fragment
+                ):
+                    raise ValueError("Production CORS requires explicit non-local HTTPS origins.")
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

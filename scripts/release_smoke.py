@@ -42,8 +42,11 @@ class SmokeVerificationError(Exception):
 class SmokeClient:
     """Wrapper supporting either remote HTTP URL or in-process TestClient."""
 
-    def __init__(self, base_url: str | None = None) -> None:
+    def __init__(self, base_url: str | None = None, db_url: str | None = None) -> None:
+        import os
+
         self.base_url = base_url.rstrip("/") if base_url else None
+        target_db = db_url or os.environ.get("DATABASE_URL")
 
         if not self.base_url:
             import tempfile
@@ -51,9 +54,12 @@ class SmokeClient:
             from benchbook.interfaces.http.app import create_app
             from fastapi.testclient import TestClient
 
-            self.temp_dir = tempfile.TemporaryDirectory()
-            db_path = f"{self.temp_dir.name}/smoke.db"
-            app = create_app(db_path=db_path)
+            if target_db:
+                self._db_path = target_db
+            else:
+                self.temp_dir = tempfile.TemporaryDirectory()
+                self._db_path = f"{self.temp_dir.name}/smoke.db"
+            app = create_app(db_path=self._db_path)
             self._client: Any = TestClient(app)
         else:
             self._client = httpx.Client(base_url=self.base_url, timeout=10.0)
@@ -103,7 +109,18 @@ def run_smoke_verification(client: SmokeClient) -> None:
         raise SmokeVerificationError(
             f"Readiness check failed: {resp.status_code} {resp.text}"
         )
-    _log("1b. Readiness Probe", "PASS", "Database connectivity confirmed")
+    ready = resp.json()
+    if ready.get("database", {}).get("engine") != health.get("database", {}).get(
+        "engine"
+    ):
+        raise SmokeVerificationError(
+            f"Engine mismatch between /health and /ready: {health} vs {ready}"
+        )
+    _log(
+        "1b. Readiness Probe",
+        "PASS",
+        f"Engine={ready.get('database', {}).get('engine')} confirmed",
+    )
 
     # 2. Intake
     intake_payload = {
@@ -621,8 +638,49 @@ def run_smoke_verification(client: SmokeClient) -> None:
         f"Exact cached response returned for key={idemp_key}",
     )
 
+    # 18. Idempotency Key Conflict (Same key, different payload -> 409)
+    conflict_payload = dict(intake_idemp)
+    conflict_payload["customer_name"] = "Conflicting Intruder User"
+    conflict_resp = client.post("/api/jobs", json=conflict_payload, headers=headers)
+    if conflict_resp.status_code != 409:
+        raise SmokeVerificationError(
+            f"Expected 409 Conflict for modified payload replay, got {conflict_resp.status_code}"
+        )
+    conflict_data = conflict_resp.json()
+    if conflict_data.get("error") != "IDEMPOTENCY_CONFLICT":
+        raise SmokeVerificationError(
+            f"Expected IDEMPOTENCY_CONFLICT, got {conflict_data}"
+        )
+    _log(
+        "18. Idempotency Conflict Guard",
+        "PASS",
+        f"Modified payload rejected: {conflict_data['error']}",
+    )
+
+    # 19. Header vs Body Idempotency Key Agreement (Disagreement -> 422)
+    mismatch_payload = dict(intake_payload)
+    mismatch_payload["serial_number"] = "MISMATCH-001"
+    mismatch_payload["idempotency_key"] = "body-key-different"
+    mismatch_resp = client.post(
+        "/api/jobs",
+        json=mismatch_payload,
+        headers={"Idempotency-Key": "header-key-different"},
+    )
+    if mismatch_resp.status_code != 422:
+        raise SmokeVerificationError(
+            f"Expected 422 Validation Error for header/body mismatch, got {mismatch_resp.status_code}"
+        )
+    mismatch_data = mismatch_resp.json()
+    if mismatch_data.get("error") != "VALIDATION_ERROR":
+        raise SmokeVerificationError(f"Expected VALIDATION_ERROR, got {mismatch_data}")
+    _log(
+        "19. Header/Body Key Agreement",
+        "PASS",
+        f"Mismatch rejected: {mismatch_data['error']}",
+    )
+
     print("=" * 70)
-    print("ALL 17 SMOKE VERIFICATION CHECKS PASSED (100% REAL PERSISTENCE)")
+    print("ALL 19 SMOKE VERIFICATION CHECKS PASSED (100% REAL PERSISTENCE)")
     print("Zero fake success, zero live provider calls, INR 0.00 spend verified.")
     print("=" * 70)
 
@@ -634,9 +692,14 @@ def main() -> None:
         default=None,
         help="Base URL of live Benchbook API service (e.g. http://localhost:8001). Default: in-process ASGI app.",
     )
+    parser.add_argument(
+        "--database-url",
+        default=None,
+        help="Database URL to test against for in-process client (e.g. postgresql://...). Default: temporary SQLite WAL db.",
+    )
     args = parser.parse_args()
 
-    client = SmokeClient(base_url=args.base_url)
+    client = SmokeClient(base_url=args.base_url, db_url=args.database_url)
     try:
         run_smoke_verification(client)
     except SmokeVerificationError as e:

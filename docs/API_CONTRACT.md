@@ -21,12 +21,22 @@
 - `400 Bad Request`: `INVALID_STATE_TRANSITION` — illegal transition on lifecycle graph.
 - `403 Forbidden`: `HUMAN_APPROVAL_REQUIRED` — automated assistant or system actor attempted a human-only action.
 - `404 Not Found`: `JOB_NOT_FOUND` — job ID does not exist.
-- `409 Conflict`: `STATE_CONFLICT` — optimistic lock failed; `expected_version` did not match database version.
-- `422 Unprocessable Entity`: `VALIDATION_ERROR` — missing required payload fields or malformed body.
+- `409 Conflict`:
+  - `STATE_CONFLICT` — optimistic lock failed; `expected_version` did not match database version.
+  - `IDEMPOTENCY_CONFLICT` — `Idempotency-Key` was previously used with a different request payload or different operation scope.
+- `422 Unprocessable Entity`: `VALIDATION_ERROR` — missing required payload fields, malformed body, or disagreement between `Idempotency-Key` HTTP header and payload `idempotency_key`.
 - `429 Too Many Requests`: `ASSISTANT_BUSY` — assistant capacity limit reached.
 - `502 Bad Gateway`: `ASSISTANT_INVALID_OUTPUT` — ungrounded or unparseable assistant response.
-- `503 Service Unavailable`: `ASSISTANT_UNAVAILABLE` — assistant service offline or unreachable.
+- `503 Service Unavailable`: `ASSISTANT_UNAVAILABLE` — assistant service offline or unreachable, or database disconnected on `/api/ready`.
 - `504 Gateway Timeout`: `ASSISTANT_TIMEOUT` — assistant deadline exceeded.
+
+### Idempotency Contract & Guarantees
+- **Header & Body Agreement**: An idempotency key can be supplied via the `Idempotency-Key` HTTP header, in the JSON request body as `idempotency_key`, or both. If supplied in both places, their values MUST match exactly; disagreement returns HTTP 422 `VALIDATION_ERROR`.
+- **Canonical Payload Hashing**: The request payload (excluding the idempotency key itself) is serialized canonically with sorted keys and hashed via SHA-256 (`payload_hash`).
+- **Atomic Mutation & Replay**: The idempotency record, job version mutation, and immutable audit event are committed in a single atomic transaction.
+- **Identical Key + Identical Payload**: Safely replays the committed response payload and HTTP status code without duplicate writes or version bumps.
+- **Identical Key + Different Payload / Scope**: Immediately rejects the conflicting mutation with HTTP 409 `IDEMPOTENCY_CONFLICT` without modifying existing records or leaking prior response payloads.
+- **Persistence**: Idempotency records are durably persisted in `idempotency_records` table across database reboots on both SQLite (WAL) and PostgreSQL 16.10.
 
 ---
 

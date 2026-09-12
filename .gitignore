@@ -28,6 +28,8 @@ ENV/
 .mypy_cache/
 .coverage
 htmlcov/
+test-results/
+.pgtest/
 
 # Node / Web
 node_modules/

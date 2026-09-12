@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Any
 
 import psycopg
@@ -171,7 +171,10 @@ CREATE TABLE IF NOT EXISTS idempotency_records (
     idempotency_key TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     action TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    scope TEXT NOT NULL,
     response_payload TEXT NOT NULL,
+    response_status INTEGER NOT NULL DEFAULT 200,
     created_at TEXT NOT NULL
 );
 """
@@ -200,18 +203,65 @@ class ConnectionWrapper:
 
 
 def init_db(db_target: str) -> None:
-    """Initialize database schema for either SQLite or PostgreSQL."""
+    """Initialize database schema for either SQLite or PostgreSQL with safe column evolution."""
     if db_target.startswith(("postgresql://", "postgres://")):
         norm_url = db_target
         if norm_url.startswith("postgres://"):
             norm_url = "postgresql://" + norm_url[len("postgres://") :]
-        with psycopg.connect(norm_url, autocommit=True) as pg_conn, pg_conn.cursor() as cur:
+        with (
+            psycopg.connect(norm_url, autocommit=True, connect_timeout=10) as pg_conn,
+            pg_conn.cursor() as cur,
+        ):
             cur.execute(get_postgres_schema_sql())
+            # Safe schema evolution for existing idempotency_records
+            cur.execute(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'idempotency_records'
+                """
+            )
+            existing_cols = {row[0] for row in cur.fetchall()}
+            if "payload_hash" not in existing_cols:
+                cur.execute(
+                    "ALTER TABLE idempotency_records ADD COLUMN payload_hash TEXT DEFAULT ''"
+                )
+            if "scope" not in existing_cols:
+                cur.execute("ALTER TABLE idempotency_records ADD COLUMN scope TEXT DEFAULT ''")
+            if "response_status" not in existing_cols:
+                cur.execute(
+                    "ALTER TABLE idempotency_records ADD COLUMN response_status INTEGER DEFAULT 200"
+                )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_idempotency_scope ON idempotency_records(scope);"
+            )
     else:
         db_path = db_target.replace("sqlite:///", "")
-        sqlite_conn = sqlite3.connect(db_path)
+        sqlite_conn = sqlite3.connect(db_path, timeout=15.0)
         try:
+            # Safe schema evolution for pre-existing idempotency_records before executescript
+            sqlite_cur = sqlite_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='idempotency_records'"
+            )
+            if sqlite_cur.fetchone():
+                info = sqlite_conn.execute("PRAGMA table_info(idempotency_records)")
+                existing_cols = {row[1] for row in info.fetchall()}
+                if "payload_hash" not in existing_cols:
+                    sqlite_conn.execute(
+                        "ALTER TABLE idempotency_records ADD COLUMN payload_hash TEXT DEFAULT ''"
+                    )
+                if "scope" not in existing_cols:
+                    sqlite_conn.execute(
+                        "ALTER TABLE idempotency_records ADD COLUMN scope TEXT DEFAULT ''"
+                    )
+                if "response_status" not in existing_cols:
+                    sqlite_conn.execute(
+                        "ALTER TABLE idempotency_records ADD COLUMN response_status INTEGER DEFAULT 200"
+                    )
+
             sqlite_conn.executescript(SCHEMA_SQL)
+            sqlite_conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_idempotency_scope ON idempotency_records(scope);"
+            )
             sqlite_conn.commit()
         finally:
             sqlite_conn.close()
@@ -223,13 +273,15 @@ def init_sqlite_db(db_path: str) -> None:
 
 
 @contextmanager
-def get_db_connection(db_target: str) -> Generator[ConnectionWrapper, None, None]:
+def get_db_connection(
+    db_target: str, write: bool = False
+) -> Generator[ConnectionWrapper, None, None]:
     """Provide a transactional scope around SQLite or PostgreSQL operations."""
     if db_target.startswith(("postgresql://", "postgres://")):
         norm_url = db_target
         if norm_url.startswith("postgres://"):
             norm_url = "postgresql://" + norm_url[len("postgres://") :]
-        pg_conn = psycopg.connect(norm_url, row_factory=dict_row)
+        pg_conn = psycopg.connect(norm_url, row_factory=dict_row, connect_timeout=10)
         try:
             with pg_conn.transaction():
                 yield ConnectionWrapper(pg_conn, is_postgres=True)
@@ -237,14 +289,22 @@ def get_db_connection(db_target: str) -> Generator[ConnectionWrapper, None, None
             pg_conn.close()
     else:
         db_path = db_target.replace("sqlite:///", "")
-        sqlite_conn = sqlite3.connect(db_path)
+        sqlite_conn = sqlite3.connect(db_path, timeout=15.0, isolation_level=None)
         sqlite_conn.row_factory = sqlite3.Row
         sqlite_conn.execute("PRAGMA foreign_keys = ON;")
-        try:
-            yield ConnectionWrapper(sqlite_conn, is_postgres=False)
-            sqlite_conn.commit()
-        except Exception:
-            sqlite_conn.rollback()
-            raise
-        finally:
-            sqlite_conn.close()
+        if write:
+            try:
+                sqlite_conn.execute("BEGIN IMMEDIATE;")
+                yield ConnectionWrapper(sqlite_conn, is_postgres=False)
+                sqlite_conn.execute("COMMIT;")
+            except Exception:
+                with suppress(Exception):
+                    sqlite_conn.execute("ROLLBACK;")
+                raise
+            finally:
+                sqlite_conn.close()
+        else:
+            try:
+                yield ConnectionWrapper(sqlite_conn, is_postgres=False)
+            finally:
+                sqlite_conn.close()

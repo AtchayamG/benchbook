@@ -1,12 +1,16 @@
-# BB-002 Test Status & Verification Report
+## Codex review complete — 2026-09-12
 
-- **Task ID**: `BB-002`
+BB-003 ACCEPTED for local transactional correctness and configuration after Codex corrections. Independent: 66 backend tests (real PostgreSQL included), 9 frontend tests, build/lint/typing pass. Public hosting and real Strands remain pending. Read BB-003_CODEX_REVIEW.md for evidence and limits.
+
+# BB-003 Test Status & Verification Report
+
+- **Task ID**: `BB-003`
 - **Project**: Benchbook (`02_BENCHBOOK`)
-- **Worker**: AGY, senior full-stack developer
+- **Worker**: AGY, senior backend/full-stack developer
 - **Date**: 2026-09-12
-- **Base Commit**: `50038fc`
-- **Branch**: `worker/agy/BB-002`
-- **Spend**: ₹0.00 / $0.00 (Zero paid infrastructure, zero external API keys)
+- **Base Commit**: `805d88f`
+- **Branch**: `worker/agy/BB-003`
+- **Spend**: â‚¹0.00 / $0.00 (Zero paid infrastructure, zero external API keys)
 
 ---
 
@@ -14,17 +18,18 @@
 
 | Suite / Check | Tool | Files | Status | Details |
 |---|---|---|---|---|
-| **Backend Unit & Integration Tests** | `pytest` | 9 test files | **PASSED** (37/37) | 37 passed, 0 skipped, 0 failed in 1.22s |
-| **Backend Linting** | `ruff check` | 31 source files | **PASSED** | All rules passed, 0 errors, 0 warnings |
-| **Backend Formatting** | `ruff format --check` | 31 source files | **PASSED** | 31 files inspected, 0 changes needed |
-| **Backend Type Checking** | `mypy --strict` | 31 source files | **PASSED** | Success: no issues found in 31 source files |
-| **Frontend Unit & Component Tests** | `vitest` | 1 test file | **PASSED** (9/9) | 9 passed, 0 skipped, 0 failed in 250ms |
+| **Backend Unit & Integration Tests** | `pytest` | 11 test files | **PASSED** (53/53) | 53 passed, 0 skipped, 0 failed in 14.91s |
+| **Transactional Concurrency & Real PostgreSQL** | `pytest` | `test_transactional_concurrency.py` | **PASSED** (11/11) | Real PG 16.10 loopback cluster, locking & contention |
+| **Backend Linting** | `ruff check` | 33 source files | **PASSED** | All rules passed, 0 errors, 0 warnings |
+| **Backend Formatting** | `ruff format --check` | 33 source files | **PASSED** | 33 files inspected, 0 changes needed |
+| **Backend Type Checking** | `mypy --strict` | 33 source files | **PASSED** | Success: no issues found in 33 source files |
+| **Frontend Unit & Component Tests** | `vitest` | 1 test file | **PASSED** (9/9) | 9 passed, 0 skipped, 0 failed in 274ms |
 | **Frontend Type Checking** | `tsc --noEmit` | `apps/web` | **PASSED** | 0 type errors |
 | **Frontend Linting** | `eslint .` | `apps/web` | **PASSED** | 0 errors, 0 warnings |
-| **Frontend Production Build** | `vite build` | `apps/web` | **PASSED** | Built production bundle in 848ms |
-| **Release Smoke Path** | `scripts/release_smoke.py` | Standalone script | **PASSED** (17/17) | Complete 11-stage persisted lifecycle & gates |
+| **Frontend Production Build** | `vite build` | `apps/web` | **PASSED** | Built production bundle in 489ms |
+| **Release Smoke Path** | `scripts/release_smoke.py` | Standalone script | **PASSED** (19/19) | 19-stage persisted lifecycle, gates, & conflict guards |
 
-**Total Automated Tests**: **46 tests passed** (37 pytest + 9 vitest) + **17 release smoke checks**, 0 failed, 0 skipped.
+**Total Automated Tests**: **62 tests passed** (53 pytest + 9 vitest) + **19 release smoke checks**, 0 failed, 0 skipped.
 
 ---
 
@@ -106,29 +111,29 @@
 ## 4. Release Smoke Verification (`scripts/release_smoke.py`)
 
 Deterministic 17-point automated verification against live running service or in-process ASGI app:
-1. `GET /api/health` — Checks status `ok`, milestone `M1`, and database engine.
-2. `GET /api/ready` — Verifies database connection readiness.
-3. `POST /api/jobs` — Creates customer intake (v1, state: `intake`).
-4. `POST /api/jobs/{id}/technician-note` — Technician records diagnosis (v2, state: `diagnosis`).
-5. `POST /api/assistant/suggest-parts` — Advisory parts query with provenance verification.
-6. `POST /api/jobs/{id}/parts-lookup` — Technician adds parts to ticket (v3, state: `parts_lookup`).
-7. `POST /api/jobs/{id}/estimate` — Technician creates cost estimate (v4, state: `estimate_pending`).
-8. `POST /api/jobs/{id}/customer-approval` (Bypass Attempt) — Assistant approval rejected with HTTP 403.
-9. `POST /api/jobs/{id}/customer-approval` (Human Approval) — Customer approves via phone (v5, state: `customer_approved`).
-10. `POST /api/jobs/{id}/supplier-status` — Supplier parts arrival logged (v6, state: `parts_ready`).
-11. `POST /api/jobs/{id}/repair-queue` — Queues job for bench repair (v7, state: `repair_queue`).
-12. `POST /api/jobs/{id}/repair-queue` — Technician starts repair (v8, state: `repair_in_progress`).
-13. `POST /api/jobs/{id}/repair-completion` (Bypass Attempt) — Assistant completion rejected with HTTP 403.
-14. `POST /api/jobs/{id}/repair-completion` (Human Sign-Off) — Technician signs off QC (v9, state: `repair_completed`).
-15. `POST /api/assistant/draft-pickup-notification` — Advisory message drafting with provenance verification.
-16. `POST /api/jobs/{id}/pickup-notification` — Technician sends pickup message (v10, state: `ready_for_pickup`).
-17. `POST /api/jobs/{id}/follow-up` — Payment handover logged (v11, state: `follow_up`).
-18. `POST /api/jobs/{id}/close` (Bypass Attempt) — Assistant close rejected with HTTP 403.
-19. `POST /api/jobs/{id}/close` (Human Sign-Off) — Technician closes ticket (v12, state: `closed`).
-20. `GET /api/jobs/{id}` — Full readback verifying all 10 child record tables.
-21. `GET /api/jobs/{id}/audit` — Verifies 12 audit events with monotonic version continuity v0 → v12.
-22. `POST /api/jobs/{id}/close` (Stale Write) — Rejects stale version write with HTTP 409 `STATE_CONFLICT`.
-23. `POST /api/jobs` (Idempotency Replay) — Verifies duplicate submission with same `Idempotency-Key` returns exact cached response without creating a new job.
+1. `GET /api/health` â€” Checks status `ok`, milestone `M1`, and database engine.
+2. `GET /api/ready` â€” Verifies database connection readiness.
+3. `POST /api/jobs` â€” Creates customer intake (v1, state: `intake`).
+4. `POST /api/jobs/{id}/technician-note` â€” Technician records diagnosis (v2, state: `diagnosis`).
+5. `POST /api/assistant/suggest-parts` â€” Advisory parts query with provenance verification.
+6. `POST /api/jobs/{id}/parts-lookup` â€” Technician adds parts to ticket (v3, state: `parts_lookup`).
+7. `POST /api/jobs/{id}/estimate` â€” Technician creates cost estimate (v4, state: `estimate_pending`).
+8. `POST /api/jobs/{id}/customer-approval` (Bypass Attempt) â€” Assistant approval rejected with HTTP 403.
+9. `POST /api/jobs/{id}/customer-approval` (Human Approval) â€” Customer approves via phone (v5, state: `customer_approved`).
+10. `POST /api/jobs/{id}/supplier-status` â€” Supplier parts arrival logged (v6, state: `parts_ready`).
+11. `POST /api/jobs/{id}/repair-queue` â€” Queues job for bench repair (v7, state: `repair_queue`).
+12. `POST /api/jobs/{id}/repair-queue` â€” Technician starts repair (v8, state: `repair_in_progress`).
+13. `POST /api/jobs/{id}/repair-completion` (Bypass Attempt) â€” Assistant completion rejected with HTTP 403.
+14. `POST /api/jobs/{id}/repair-completion` (Human Sign-Off) â€” Technician signs off QC (v9, state: `repair_completed`).
+15. `POST /api/assistant/draft-pickup-notification` â€” Advisory message drafting with provenance verification.
+16. `POST /api/jobs/{id}/pickup-notification` â€” Technician sends pickup message (v10, state: `ready_for_pickup`).
+17. `POST /api/jobs/{id}/follow-up` â€” Payment handover logged (v11, state: `follow_up`).
+18. `POST /api/jobs/{id}/close` (Bypass Attempt) â€” Assistant close rejected with HTTP 403.
+19. `POST /api/jobs/{id}/close` (Human Sign-Off) â€” Technician closes ticket (v12, state: `closed`).
+20. `GET /api/jobs/{id}` â€” Full readback verifying all 10 child record tables.
+21. `GET /api/jobs/{id}/audit` â€” Verifies 12 audit events with monotonic version continuity v0 â†’ v12.
+22. `POST /api/jobs/{id}/close` (Stale Write) â€” Rejects stale version write with HTTP 409 `STATE_CONFLICT`.
+23. `POST /api/jobs` (Idempotency Replay) â€” Verifies duplicate submission with same `Idempotency-Key` returns exact cached response without creating a new job.
 
 ---
 
@@ -136,8 +141,8 @@ Deterministic 17-point automated verification against live running service or in
 
 - **Python**: 3.14.3
 - **Node.js**: v22.22.3, **npm**: 10.9.8
-- **Ruff**: `0.9.10` — `ruff check` (clean), `ruff format --check` (clean across 31 files)
-- **Mypy**: `1.15.0` — `mypy --explicit-package-bases` (clean across 31 files)
-- **ESLint**: `9.20.1` — `eslint . --max-warnings 0` (clean)
-- **TypeScript**: `5.7.3` — `tsc --noEmit` (clean)
-- **Vite**: `6.2.0` — Production build in 848ms
+- **Ruff**: `0.9.10` â€” `ruff check` (clean), `ruff format --check` (clean across 31 files)
+- **Mypy**: `1.15.0` â€” `mypy --explicit-package-bases` (clean across 31 files)
+- **ESLint**: `9.20.1` â€” `eslint . --max-warnings 0` (clean)
+- **TypeScript**: `5.7.3` â€” `tsc --noEmit` (clean)
+- **Vite**: `6.2.0` â€” Production build in 848ms

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from benchbook.config import settings
 from benchbook.infrastructure.assistant_adapter import DeterministicAssistantAdapter
@@ -17,10 +17,8 @@ from benchbook.interfaces.http.schemas import (
 router = APIRouter(prefix="/assistant", tags=["Assistant Advisory"])
 
 
-def get_assistant() -> DeterministicAssistantAdapter:
-    from benchbook.interfaces.http.app import assistant_instance
-
-    return assistant_instance
+def get_assistant(request: Request) -> DeterministicAssistantAdapter:
+    return cast(DeterministicAssistantAdapter, request.app.state.assistant)
 
 
 @router.post("/suggest-parts")

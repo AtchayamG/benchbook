@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 
 from benchbook.domain.models import Job, JobState
 from benchbook.infrastructure.seed_data import SAMPLE_PRESETS, create_sample_job
 from benchbook.infrastructure.sqlite_store import SqliteRepairJobStore
-from benchbook.interfaces.http.schemas import CreateJobRequest
+from benchbook.interfaces.http.schemas import CreateJobRequest, resolve_idempotency_key
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -20,10 +20,8 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def get_store() -> SqliteRepairJobStore:
-    from benchbook.interfaces.http.app import store_instance
-
-    return store_instance
+def get_store(request: Request) -> SqliteRepairJobStore:
+    return cast(SqliteRepairJobStore, request.app.state.store)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -33,10 +31,7 @@ def create_job(
     store: SqliteRepairJobStore = Depends(get_store),
 ) -> dict[str, Any]:
     """Create a new repair intake job."""
-    effective_idempotency = idempotency_key or payload.idempotency_key
-    cached = store.get_idempotent_response(effective_idempotency)
-    if cached:
-        return cached
+    effective_idempotency = resolve_idempotency_key(idempotency_key, payload.idempotency_key)
 
     now = _now_iso()
     job_id = str(uuid4())
@@ -64,13 +59,8 @@ def create_job(
         updated_at=now,
     )
 
-    created_job = store.create_job(job, idempotency_key=effective_idempotency)
-    result = {"job": created_job.model_dump()}
-
-    if effective_idempotency:
-        store.save_idempotent_response(effective_idempotency, job.job_id, "create_job", result)
-
-    return result
+    created_job = store.create_job(job, idempotency_key=effective_idempotency, payload=payload)
+    return {"job": created_job.model_dump()}
 
 
 @router.get("")
