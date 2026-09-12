@@ -1,0 +1,74 @@
+graph TD
+    subgraph Browser ["Frontend: React 18 + Vite (English-First UI)"]
+        UI_Intake["Job Intake (Tamil Nadu Presets)"]
+        UI_Timeline["Workflow Timeline (11 Stages)"]
+        UI_Bench["Technician Bench Action Panel"]
+        UI_Gates["Visible Human Approval Gates"]
+        UI_Audit["Real-time Audit Stream"]
+        UI_Advisory["Advisory Assistant Cards (Provenance)"]
+    end
+
+    subgraph API ["Backend: FastAPI Service (Typed REST Contract)"]
+        Router_Health["/api/health"]
+        Router_Jobs["/api/jobs (Intake, Filter, Seed)"]
+        Router_Trans["/api/jobs/{id}/* (Transitions & Mutations)"]
+        Router_Assist["/api/assistant/* (Advisory Endpoints)"]
+
+        Middleware["CORS & Error Handlers (400, 403, 404, 409, 429, 502, 503, 504)"]
+    end
+
+    subgraph Governance ["Strict Human Approval Gates"]
+        Gate1{"Human Gate 1: Customer Approval (Phone/WhatsApp/In-Person)"}
+        Gate2{"Human Gate 2: Technician QC Sign-Off & Signature"}
+        Gate3{"Human Gate 3: Handover & Close Authorization"}
+    end
+
+    subgraph AdvisoryEngine ["Advisory Assistant (Offline Deterministic Adapter)"]
+        Adapter["DeterministicAssistantAdapter"]
+        Knowledge["Tamil Nadu Spare Parts Knowledge Base"]
+        Drafter["WhatsApp / SMS Customer Communication Drafter"]
+        FailureSim["Failure Simulation (Timeout, Busy, Unavailable, Invalid)"]
+        StrandsSeam["Strands LLM Boundary (No live calls in BB-001)"]
+    end
+
+    subgraph Storage ["Persistence Layer (Postgres-Ready Abstraction)"]
+        Store["SqliteRepairJobStore (WAL Mode, Foreign Keys)"]
+        T_Jobs[("jobs (Version Monotonic)")]
+        T_Notes[("technician_notes")]
+        T_Parts[("part_items")]
+        T_Est[("estimates")]
+        T_Appr[("customer_approvals")]
+        T_Sup[("supplier_statuses")]
+        T_Comp[("repair_completions")]
+        T_Notif[("pickup_notifications")]
+        T_Fol[("follow_ups")]
+        T_Close[("job_closes")]
+        T_Audit[("audit_events (Immutable Stream)")]
+        T_Idemp[("idempotency_records")]
+    end
+
+    Browser -->|HTTP JSON| API
+    Router_Jobs --> Store
+    Router_Trans --> Gate1
+    Router_Trans --> Gate2
+    Router_Trans --> Gate3
+    Gate1 -->|Validated| Store
+    Gate2 -->|Validated| Store
+    Gate3 -->|Validated| Store
+    Router_Assist --> Adapter
+    Adapter --> Knowledge
+    Adapter --> Drafter
+    Adapter --> FailureSim
+    Adapter -.-> StrandsSeam
+    Store --> T_Jobs
+    Store --> T_Notes
+    Store --> T_Parts
+    Store --> T_Est
+    Store --> T_Appr
+    Store --> T_Sup
+    Store --> T_Comp
+    Store --> T_Notif
+    Store --> T_Fol
+    Store --> T_Close
+    Store --> T_Audit
+    Store --> T_Idemp
