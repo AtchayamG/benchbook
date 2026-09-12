@@ -1,4 +1,48 @@
-## Latest: BB-001 Benchbook Initial Repository and Full Workflow Slice (2026-09-12)
+## Latest: BB-002 Benchbook Release Readiness and Zero-Spend Deployment Path (2026-09-12)
+
+TASK_ID: BB-002
+STATUS: READY_FOR_REVIEW
+WORKER: AGY, senior full-stack developer
+MODEL: Gemini 3.8 Flash High
+EFFORT: HIGH
+BRANCH: worker/agy/BB-002
+BASE_COMMIT: 50038fc
+PROPOSED_COMMIT_MSG: feat(benchbook): complete release readiness and deployment path (BB-002)
+
+Created and verified release-readiness enhancements for Project 2 (Benchbook) at:
+`D:\Work\Codex\Hackathon Projects\Agents For Humans\02_BENCHBOOK`
+
+Key achievements & verifications:
+- Hardened database boundary: Dual SQLite (WAL) / PostgreSQL (`psycopg[binary]>=3.1.0`) support with ANSI SQL `ON CONFLICT` and dynamic store resolution.
+- Security & Environment: Strict CORS allowlist parsing, container readiness probe (`GET /api/ready` with 503 on failure), honest health report (`GET /api/health`).
+- Zero-Spend Deployment Manifests: `render.yaml`, `railway.json`, `Procfile`, `Dockerfile`, `apps/web/vercel.json`, and `.env.example` templates.
+- Deterministic Release Smoke: `scripts/release_smoke.py` testing all 11 stages, human gates (403), advisory provenance, optimistic conflict (409), idempotency replay, and 10 child tables readback. 17/17 passed.
+- Judge-Facing UI Polish: 60-second Evaluator Guide banner, database engine indicator badge, human gate lock badges on timeline.
+- Automated Verification:
+  - Backend pytest: 37 passed, 0 skipped, 0 failed in 1.22s.
+  - Frontend vitest: 9 passed, 0 skipped, 0 failed in 250ms.
+  - Ruff check & format: clean (31 source files).
+  - Strict Mypy: clean across 31 source files.
+  - Frontend tsc & eslint: clean (0 errors, 0 warnings).
+  - Production build: clean (848ms).
+  - Smoke script: 17/17 passed.
+  - Personal spend: Exactly ₹0.00.
+  - Deployment status: `BLOCKED_INFRA` (waiting on hosted credentials).
+
+Documentation:
+- `docs/BB-002_ACCEPTANCE.md`
+- `docs/TASKSTATUS.md`
+- `docs/HANDOVER.md`
+- `docs/TEST_STATUS.md`
+- `docs/REVIEW_QUEUE.md`
+- `README.md`
+
+NEXT_CODEX_MODE: ASTRA_HIGH
+REASON: BB-002 is fully implemented and verified; ready for Codex review.
+
+---
+
+## BB-001 Benchbook Initial Repository and Full Workflow Slice (2026-09-12)
 
 TASK_ID: BB-001
 STATUS: READY_FOR_REVIEW

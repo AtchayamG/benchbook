@@ -5,18 +5,18 @@ interface WorkflowTimelineProps {
   currentState: JobState;
 }
 
-const STAGES: { key: JobState; label: string }[] = [
+const STAGES: { key: JobState; label: string; isHumanGate?: boolean }[] = [
   { key: 'intake', label: '1. Intake' },
   { key: 'diagnosis', label: '2. Diagnosis' },
   { key: 'parts_lookup', label: '3. Parts' },
-  { key: 'estimate_pending', label: '4. Estimate' },
+  { key: 'estimate_pending', label: '4. Estimate', isHumanGate: true },
   { key: 'customer_approved', label: '5. Approved' },
   { key: 'parts_ready', label: '6. Supplier' },
   { key: 'repair_queue', label: '7. Queue' },
-  { key: 'repair_in_progress', label: '8. Bench' },
+  { key: 'repair_in_progress', label: '8. Bench', isHumanGate: true },
   { key: 'repair_completed', label: '9. Completed' },
   { key: 'ready_for_pickup', label: '10. Pickup' },
-  { key: 'follow_up', label: '11. Settlement' },
+  { key: 'follow_up', label: '11. Settlement', isHumanGate: true },
   { key: 'closed', label: '12. Closed' },
 ];
 
@@ -41,7 +41,14 @@ export const WorkflowTimeline: React.FC<WorkflowTimelineProps> = ({ currentState
                   <span className="timeline-dot">
                     {idx < currentIndex ? '✓' : idx + 1}
                   </span>
-                  <span>{stage.label}</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}>
+                    <span>{stage.label}</span>
+                    {stage.isHumanGate && (
+                      <span title="Human Approval Gate: Cannot be completed by assistant" style={{ fontSize: '0.65rem' }}>
+                        🔒
+                      </span>
+                    )}
+                  </span>
                 </div>
                 {idx < STAGES.length - 1 && <div className="timeline-line" />}
               </React.Fragment>

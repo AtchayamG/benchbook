@@ -1,4 +1,61 @@
-## Latest: BB-001 Benchbook Initial Repository and Full Workflow Slice
+## Latest: BB-002 Benchbook Release Readiness and Zero-Spend Deployment Path
+
+TASK_ID: BB-002
+STATUS: READY_FOR_REVIEW
+WORKER: AGY, senior full-stack developer
+MODEL: Gemini 3.8 Flash High
+EFFORT: HIGH
+BRANCH: worker/agy/BB-002
+BASE_COMMIT: 50038fc
+PROPOSED_COMMIT_MSG: feat(benchbook): complete release readiness and deployment path (BB-002)
+
+Hardened and release-verified Project 2 (Benchbook) at:
+`D:\Work\Codex\Hackathon Projects\Agents For Humans\02_BENCHBOOK`
+
+Key achievements & verifications:
+- Database Boundary Hardening:
+  - Added PostgreSQL (`psycopg[binary]>=3.1.0`) support with zero-breaking changes to local SQLite default.
+  - Safe schema initialization (`init_db`) strips SQLite PRAGMAs for PostgreSQL.
+  - Dynamic store factory (`get_repair_job_store`) resolves store implementation based on DB URL scheme.
+  - `ConnectionWrapper` adapts parameter placeholders (`?` -> `%s`) transparently on PostgreSQL.
+- Security & Environment Hardening:
+  - Strict CORS allow-list middleware parsing comma-separated strings or JSON arrays.
+  - Container readiness probe `GET /api/ready` returning 503 on database disconnection.
+  - Honest health check `GET /api/health` reporting database engine (`sqlite` / `postgres`) and connection status.
+- Zero-Spend Deployment Blueprints:
+  - Render Blueprint (`render.yaml`), Railway NIXPACKS (`railway.json`), PaaS `Procfile`, multi-stage `Dockerfile`, Vercel SPA config (`apps/web/vercel.json`), and comprehensive `.env.example` templates.
+- Deterministic Release Smoke Path (`scripts/release_smoke.py`):
+  - Standalone script exercising full 11-stage persisted lifecycle, human gates (403), advisory provenance, 409 optimistic conflict, idempotency replay, and 10 child tables readback. 17/17 checks passed.
+  - Integrated into backend pytest suite via `tests/test_release_smoke.py`.
+- Judge-Facing UI Polish:
+  - 60-second dismissible Evaluator Guide banner in header.
+  - Database engine badge (`SQLite (WAL)` / `PostgreSQL (Neon)`).
+  - Visual 🔒 lock badges on human-gated stages in `WorkflowTimeline`.
+- Automated Verification:
+  - Backend pytest: 37 passed, 0 skipped, 0 failed in 1.22s.
+  - Frontend vitest: 9 passed, 0 skipped, 0 failed in 250ms.
+  - Ruff check & format: clean (31 source files).
+  - Strict Mypy: clean across 31 source files.
+  - Frontend tsc typecheck & eslint: clean (0 errors, 0 warnings).
+  - Frontend production build: clean bundle built in 848ms.
+  - Standalone smoke test: 17/17 checks passed.
+  - Personal spend: Exactly ₹0.00.
+  - Deployment status: BLOCKED_INFRA (zero secrets committed, ready for credentials).
+
+Documentation:
+- `docs/BB-002_ACCEPTANCE.md`
+- `docs/TASKSTATUS.md`
+- `docs/HANDOVER.md`
+- `docs/TEST_STATUS.md`
+- `docs/REVIEW_QUEUE.md`
+- `README.md`
+
+NEXT_CODEX_MODE: ASTRA_HIGH
+REASON: BB-002 is fully implemented and verified across backend, frontend, and deployment artifacts; ready for Codex review.
+
+---
+
+## BB-001 Benchbook Initial Repository and Full Workflow Slice
 
 TASK_ID: BB-001
 STATUS: READY_FOR_REVIEW

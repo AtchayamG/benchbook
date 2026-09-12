@@ -2,11 +2,13 @@ import type {
   AssistantDraftMessageResponse,
   AssistantPartsSuggestionResponse,
   AuditEvent,
+  HealthResponse,
   Job,
   JobDetails,
 } from '../types/benchbook';
 
-const API_BASE = '/api';
+const ENV_BASE = import.meta.env.VITE_API_BASE_URL;
+const API_BASE = ENV_BASE ? `${ENV_BASE.replace(/\/$/, '')}/api` : '/api';
 
 export class ApiError extends Error {
   constructor(
@@ -39,7 +41,7 @@ async function handleResponse<T>(res: Response): Promise<T> {
 }
 
 export const api = {
-  async getHealth(): Promise<{ status: string; app: string; milestone: string; shop: { name: string } }> {
+  async getHealth(): Promise<HealthResponse> {
     const res = await fetch(`${API_BASE}/health`);
     return handleResponse(res);
   },

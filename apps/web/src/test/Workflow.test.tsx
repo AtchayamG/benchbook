@@ -155,4 +155,40 @@ describe('Benchbook Frontend Workflow Tests', () => {
       expect(screen.getByText('v0 → v1')).toBeInTheDocument();
     });
   });
+
+  it('renders evaluator guide banner and allows dismissal', async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Evaluator Guide/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/keeps a repair shop moving from intake to pickup/)).toBeInTheDocument();
+
+    const dismissBtn = screen.getByLabelText('Dismiss Evaluator Guide');
+    fireEvent.click(dismissBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Evaluator Guide/)).not.toBeInTheDocument();
+    });
+  });
+
+  it('renders database engine badge and human gate locks on timeline', async () => {
+    vi.spyOn(api, 'getHealth').mockResolvedValue({
+      status: 'ok',
+      app: 'Benchbook',
+      milestone: 'M2',
+      shop: { name: 'Kovai Tech Bench' },
+      database: { engine: 'sqlite', status: 'connected' },
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('DB: SQLite (WAL)')).toBeInTheDocument();
+      expect(screen.getByText('Milestone M2')).toBeInTheDocument();
+    });
+
+    const lockIcons = screen.getAllByTitle('Human Approval Gate: Cannot be completed by assistant');
+    expect(lockIcons.length).toBe(3);
+  });
 });

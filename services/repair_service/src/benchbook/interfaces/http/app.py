@@ -20,15 +20,14 @@ from benchbook.domain.errors import (
 )
 from benchbook.infrastructure.assistant_adapter import DeterministicAssistantAdapter
 from benchbook.infrastructure.sqlite_store import SqliteRepairJobStore
+from benchbook.infrastructure.store_factory import get_repair_job_store
 from benchbook.interfaces.http.routes.assistant import router as assistant_router
 from benchbook.interfaces.http.routes.health import router as health_router
 from benchbook.interfaces.http.routes.jobs import router as jobs_router
 from benchbook.interfaces.http.routes.transitions import router as transitions_router
 
 # Module-level singletons for dependency injection
-store_instance: SqliteRepairJobStore = SqliteRepairJobStore(
-    settings.database_url.replace("sqlite:///", "")
-)
+store_instance: SqliteRepairJobStore = get_repair_job_store(settings.database_url)
 assistant_instance: DeterministicAssistantAdapter = DeterministicAssistantAdapter(
     settings.assistant_mode
 )
@@ -42,14 +41,14 @@ def create_app(
     global store_instance, assistant_instance
 
     if db_path is not None:
-        store_instance = SqliteRepairJobStore(db_path)
+        store_instance = get_repair_job_store(db_path)
     if assistant_mode is not None:
         assistant_instance = DeterministicAssistantAdapter(assistant_mode)
 
     app = FastAPI(
         title="Benchbook API",
         description="Professional Repair Shop Workflow & Advisory Engine",
-        version="0.1.0",
+        version="0.2.0",
     )
 
     # CORS configuration

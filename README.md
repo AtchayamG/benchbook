@@ -33,8 +33,9 @@ Benchbook is **Project 2** of the **Agents for Humans** program. It is an indepe
 │       │   ├── api/client.ts          # Typed REST API client
 │       │   ├── components/            # UI components (Timeline, Detail, Cards)
 │       │   ├── types/benchbook.ts     # TypeScript domain models & enums
-│       │   ├── App.tsx                # Workbench main screen
+│       │   ├── App.tsx                # Workbench main screen with Evaluator Guide
 │       │   └── index.css              # Accessible, clean styling
+│       ├── vercel.json                # Vercel SPA routing and proxy config
 │       └── package.json
 ├── architecture/
 │   └── benchbook_architecture.mmd     # Mermaid system architecture diagram
@@ -42,18 +43,26 @@ Benchbook is **Project 2** of the **Agents for Humans** program. It is an indepe
 │   ├── API_CONTRACT.md                # Complete REST API specification
 │   ├── ARCHITECTURE.md                # System architecture & invariants
 │   ├── BB-001_ACCEPTANCE.md           # Formal BB-001 acceptance criteria report
+│   ├── BB-002_ACCEPTANCE.md           # Formal BB-002 release readiness report
 │   ├── HANDOVER.md                    # Operational handover instructions
 │   ├── REVIEW_QUEUE.md                # Review checkpoint queue
 │   ├── TASKSTATUS.md                  # Milestone status tracking
 │   └── TEST_STATUS.md                 # Verification test results & commands
+├── scripts/
+│   └── release_smoke.py               # Deterministic 17-point release smoke script
 ├── services/
 │   └── repair_service/                # Python / FastAPI Backend
 │       ├── src/benchbook/
 │       │   ├── domain/                # Models, enums, errors, workflow engine
-│       │   ├── infrastructure/        # SQLite WAL store, assistant adapter, seeds
+│       │   ├── infrastructure/        # SQLite WAL / PostgreSQL store, adapter, seeds
 │       │   └── interfaces/http/       # FastAPI app & route handlers
-│       ├── tests/                     # 6 pytest test suites (25 tests)
+│       ├── tests/                     # 9 pytest test suites (37 tests)
 │       └── pyproject.toml             # Ruff, mypy, pytest configs
+├── Dockerfile                         # Production multi-stage Python container
+├── Procfile                           # PaaS process launcher
+├── railway.json                       # Railway NIXPACKS deployment config
+├── render.yaml                        # Render Blueprint for zero-spend web service
+├── .env.example                       # Documented environment template
 └── README.md
 ```
 
@@ -80,6 +89,7 @@ uvicorn src.benchbook.interfaces.http.app:app --reload --port 8001
 The API documentation is available at:
 - Swagger UI: `http://localhost:8001/docs`
 - Health check: `http://localhost:8001/api/health`
+- Container readiness: `http://localhost:8001/api/ready`
 
 ### Frontend Setup (`apps/web`)
 ```bash
@@ -88,50 +98,106 @@ cd apps/web
 # Install dependencies
 npm install
 
-# Start Vite development server
+# Start Vite development server (proxies /api to localhost:8001)
 npm run dev
 ```
 Open `http://localhost:5173` to access the Benchbook technician workbench.
 
 ---
 
-## 4. Automated Testing & Verification
+## 4. Deterministic Release Smoke Path
+
+Benchbook includes a standalone deterministic smoke script that exercises the full 11-stage persisted lifecycle against any running API service or in-process ASGI app:
+
+```bash
+# Run against in-process ASGI app (zero setup, isolated SQLite WAL database)
+python scripts/release_smoke.py
+
+# Or run against live running service
+python scripts/release_smoke.py --base-url http://localhost:8001
+```
+
+The script rigorously checks:
+1. Health & readiness probes (honest database engine check).
+2. Complete 11-stage happy path from Customer Intake to Ticket Close.
+3. Human Authority Gates: HTTP 403 Forbidden on assistant bypass attempts for Customer Approval, Technician QC Sign-off, and Ticket Close.
+4. Advisory assistant provenance (`advisory_only: true`, `benchbook_offline_adapter`).
+5. Monotonic version progression and complete 12-event audit stream readback.
+6. Optimistic concurrency conflict rejection (HTTP 409 `STATE_CONFLICT` on stale version).
+7. `Idempotency-Key` replay verification (exact cached response returned without creating duplicate jobs).
+
+---
+
+## 5. Zero-Spend Deployment Guide (₹0.00 / $0.00)
+
+Benchbook is engineered for production deployment across free-tier providers without incurring any cost:
+
+### Option A: Render (Backend) + Neon (Postgres) + Vercel (Frontend)
+1. **Database (Neon Free Tier)**:
+   - Create a free Postgres instance at [neon.tech](https://neon.tech).
+   - Copy connection string (`postgres://...`).
+2. **Backend (Render Free Web Service)**:
+   - Connect repository to Render.
+   - Use `render.yaml` blueprint or configure a Web Service:
+     - Build: `pip install -e services/repair_service`
+     - Start: `python -m uvicorn benchbook.interfaces.http.app:app --host 0.0.0.0 --port $PORT`
+     - Environment Variables:
+       - `BENCHBOOK_DATABASE_URL`: Your Neon Postgres URL.
+       - `CORS_ORIGINS`: Your Vercel frontend domain (`https://benchbook-web.vercel.app`).
+       - `ENVIRONMENT`: `production`.
+3. **Frontend (Vercel Hobby Tier)**:
+   - Deploy `apps/web` root.
+   - Set environment variable `VITE_API_BASE_URL` to your Render backend URL (`https://benchbook-api.onrender.com`).
+   - `apps/web/vercel.json` automatically configures SPA routing and clean headers.
+
+### Option B: Container / PaaS (Railway / Fly.io / Docker)
+- **Dockerfile**: Multi-stage container definition ready for build:
+  ```bash
+  docker build -t benchbook-api .
+  docker run -p 8000:8000 -e BENCHBOOK_DATABASE_URL=sqlite:///./benchbook.db benchbook-api
+  ```
+- **Railway**: Connect repo; `railway.json` automatically detects configuration via NIXPACKS.
+- **PaaS (Heroku/Dokku)**: `Procfile` declares `web: uvicorn benchbook.interfaces.http.app:app --host 0.0.0.0 --port ${PORT:-8000}`.
+
+---
+
+## 6. Automated Testing & Verification
 
 ### Backend Verification
 From `services/repair_service`:
 ```bash
-# Run pytest test suite (25 tests)
+# Run pytest test suite (37 tests across 9 files)
 pytest -v
 
 # Run Ruff linter & format checker
-ruff check .
-ruff format --check .
+ruff check . ../../scripts
+ruff format --check . ../../scripts
 
 # Run strict type checking with Mypy
-mypy src tests
+mypy --explicit-package-bases src tests ../../scripts
 ```
-*Current result: 25/25 passed (0.94s), 0 lint errors, 0 format issues, 0 type errors across 26 source files.*
+*Result: 37/37 passed (1.22s), 0 lint errors, 0 format issues, 0 type errors across 31 source files.*
 
 ### Frontend Verification
 From `apps/web`:
 ```bash
-# Run Vitest test suite (7 tests)
-npm test -- --run
+# Run Vitest test suite (9 tests)
+npm test
 
 # Run ESLint
 npm run lint
 
 # Run TypeScript type check
-npx tsc --noEmit
+npm run typecheck
 
 # Run production build
 npm run build
 ```
-*Current result: 7/7 passed (204ms), 0 lint errors, 0 type errors, production build succeeds in ~550ms.*
+*Result: 9/9 passed (250ms), 0 lint errors, 0 type errors, production build succeeds in ~850ms.*
 
 ---
 
-## 5. Tamil Nadu Synthetic Presets
+## 7. Tamil Nadu Synthetic Presets
 
 Benchbook includes contact-safe synthetic presets reflecting common repair shop workloads in Coimbatore:
 1. **Atomberg Renesa 1200mm Smart BLDC Fan**: Motor bearing hum and BLDC driver PCB sensor fault.
@@ -141,6 +207,6 @@ Benchbook includes contact-safe synthetic presets reflecting common repair shop 
 
 ---
 
-## 6. License
+## 8. License
 
 MIT License — see [LICENSE](LICENSE) for details.

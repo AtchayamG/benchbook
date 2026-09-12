@@ -28,7 +28,7 @@ from benchbook.domain.models import (
     TechnicianNote,
 )
 from benchbook.domain.workflow import validate_transition
-from benchbook.infrastructure.database import get_db_connection, init_sqlite_db
+from benchbook.infrastructure.database import get_db_connection, init_db
 
 
 def _now_iso() -> str:
@@ -36,11 +36,27 @@ def _now_iso() -> str:
 
 
 class SqliteRepairJobStore:
-    """Thread-safe SQLite store for Benchbook jobs, records, and audit events."""
+    """Thread-safe SQL store for Benchbook jobs, records, and audit events (SQLite & PostgreSQL)."""
 
     def __init__(self, db_path: str = "./benchbook.db") -> None:
         self.db_path = db_path
-        init_sqlite_db(self.db_path)
+        init_db(self.db_path)
+
+    @property
+    def engine_name(self) -> str:
+        """Return 'postgres' if using PostgreSQL connection string, else 'sqlite'."""
+        if self.db_path.startswith(("postgresql://", "postgres://")):
+            return "postgres"
+        return "sqlite"
+
+    def ping(self) -> bool:
+        """Verify database connectivity and query readiness."""
+        try:
+            with get_db_connection(self.db_path) as conn:
+                cur = conn.execute("SELECT 1")
+                return cur.fetchone() is not None
+        except Exception:
+            return False
 
     def _row_to_job(self, row: Any) -> Job:
         return Job(
@@ -85,8 +101,13 @@ class SqliteRepairJobStore:
         with get_db_connection(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO idempotency_records (idempotency_key, job_id, action, response_payload, created_at)
+                INSERT INTO idempotency_records (idempotency_key, job_id, action, response_payload, created_at)
                 VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (idempotency_key) DO UPDATE SET
+                    job_id = EXCLUDED.job_id,
+                    action = EXCLUDED.action,
+                    response_payload = EXCLUDED.response_payload,
+                    created_at = EXCLUDED.created_at
                 """,
                 (idempotency_key, job_id, action, json.dumps(payload), _now_iso()),
             )
@@ -1158,3 +1179,12 @@ class SqliteRepairJobStore:
                 )
                 for r in cur.fetchall()
             ]
+
+
+SqlRepairJobStore = SqliteRepairJobStore
+
+
+class PostgresRepairJobStore(SqliteRepairJobStore):
+    """PostgreSQL store implementation conforming to SqlRepairJobStore."""
+
+    pass

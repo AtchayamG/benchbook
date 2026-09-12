@@ -367,3 +367,48 @@ body {
   padding: 0.6rem 0.85rem;
   border-bottom: 1px solid var(--slate-200);
 }
+
+/* Evaluator Guide Banner */
+.evaluator-guide-banner {
+  background-color: #f0f9ff;
+  border-bottom: 1px solid #bae6fd;
+  padding: 0.6rem 1.5rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.evaluator-guide-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.evaluator-guide-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: #0369a1;
+}
+
+.evaluator-guide-text {
+  font-size: 0.775rem;
+  color: #0c4a6e;
+  line-height: 1.4;
+}
+
+.evaluator-guide-close {
+  background: none;
+  border: none;
+  color: #0284c7;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+}
+
+.evaluator-guide-close:hover {
+  background-color: #e0f2fe;
+}

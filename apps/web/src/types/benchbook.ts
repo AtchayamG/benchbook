@@ -198,3 +198,19 @@ export interface AssistantDraftMessageResponse {
   character_count: number;
   provenance: AssistantProvenance;
 }
+
+export interface HealthResponse {
+  status: string;
+  app: string;
+  milestone: string;
+  shop: { name: string; location?: string; phone?: string };
+  database?: {
+    engine: string;
+    status: string;
+    connected?: boolean;
+  };
+  assistant?: {
+    mode: string;
+    human_approval_required: boolean;
+  };
+}

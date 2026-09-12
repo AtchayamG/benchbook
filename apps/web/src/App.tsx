@@ -11,7 +11,13 @@ export const App: React.FC = () => {
   const [jobDetails, setJobDetails] = useState<JobDetails | null>(null);
   const [isIntakeOpen, setIsIntakeOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [healthInfo, setHealthInfo] = useState<{ app: string; milestone: string; shop: { name: string } } | null>(null);
+  const [showGuide, setShowGuide] = useState(true);
+  const [healthInfo, setHealthInfo] = useState<{
+    app: string;
+    milestone: string;
+    shop: { name: string };
+    database?: { engine: string; status: string };
+  } | null>(null);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -75,7 +81,7 @@ export const App: React.FC = () => {
     <div>
       {/* Top Header */}
       <header className="app-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ fontSize: '1.4rem' }}>🛠️</span>
             <div>
@@ -92,6 +98,9 @@ export const App: React.FC = () => {
           </span>
           <span style={{ fontSize: '0.75rem', backgroundColor: '#e2e8f0', padding: '0.2rem 0.5rem', borderRadius: '4px', fontWeight: 600 }}>
             Milestone {healthInfo?.milestone || 'M1'}
+          </span>
+          <span style={{ fontSize: '0.75rem', backgroundColor: '#e0e7ff', color: '#3730a3', padding: '0.2rem 0.5rem', borderRadius: '4px', fontWeight: 600 }}>
+            DB: {healthInfo?.database?.engine === 'postgres' ? 'PostgreSQL (Neon)' : 'SQLite (WAL)'}
           </span>
         </div>
 
@@ -110,6 +119,32 @@ export const App: React.FC = () => {
           </button>
         </div>
       </header>
+
+      {/* Evaluator & Judge Walkthrough Guide */}
+      {showGuide && (
+        <div className="evaluator-guide-banner">
+          <div className="evaluator-guide-content">
+            <div className="evaluator-guide-title">
+              <span>💡</span>
+              <strong>Evaluator Guide (60-Second Walkthrough):</strong>
+            </div>
+            <p className="evaluator-guide-text">
+              <strong>Benchbook keeps a repair shop moving from intake to pickup without making the technician become a full-time coordinator.</strong>{' '}
+              The technician owns diagnostic and repair authority across 11 persisted stages. The Assistant suggests parts &amp; drafts messages with explicit provenance, but
+              <strong> CANNOT</strong> approve estimates, sign off QC completion, or close jobs (indicated by 🔒 locks on the timeline).
+              Click <em>&ldquo;Seed Sample Jobs&rdquo;</em> on the left bench to load contact-safe Tamil Nadu repair presets (Atomberg Fan, Voltas AC PCB, Preethi Mixer, ThinkPad Laptop).
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowGuide(false)}
+            className="evaluator-guide-close"
+            aria-label="Dismiss Evaluator Guide"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Main Container */}
       <div className="app-container">

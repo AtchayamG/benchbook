@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: benchbook-api
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -e services/repair_service
+    startCommand: uvicorn benchbook.interfaces.http.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/ready
+    envVars:
+      - key: BENCHBOOK_ENVIRONMENT
+        value: production
+      - key: BENCHBOOK_DATABASE_URL
+        sync: false
+      - key: BENCHBOOK_CORS_ORIGINS
+        value: https://benchbook.vercel.app,http://localhost:5173
+      - key: BENCHBOOK_ASSISTANT_MODE
+        value: deterministic
+      - key: BENCHBOOK_SHOP_NAME
+        value: Kovai Tech Bench
+      - key: BENCHBOOK_SHOP_LOCATION
+        value: Gandhipuram, Coimbatore, Tamil Nadu
+      - key: BENCHBOOK_SHOP_PHONE
+        value: +91 98400 11223

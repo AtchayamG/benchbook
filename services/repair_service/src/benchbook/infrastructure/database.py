@@ -1,10 +1,14 @@
-"""Benchbook Database Engine and Schema Definitions."""
+"""Benchbook Database Engine, Schema Definitions, and Unified Connection Manager."""
 
 from __future__ import annotations
 
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
 
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -173,27 +177,74 @@ CREATE TABLE IF NOT EXISTS idempotency_records (
 """
 
 
+def get_postgres_schema_sql() -> str:
+    """Return PostgreSQL-compatible DDL omitting SQLite-specific PRAGMAs."""
+    return "\n".join(
+        line for line in SCHEMA_SQL.splitlines() if not line.strip().startswith("PRAGMA")
+    )
+
+
+class ConnectionWrapper:
+    """Unified database connection wrapper abstracting SQLite and PostgreSQL cursor differences."""
+
+    def __init__(self, raw_conn: Any, is_postgres: bool = False) -> None:
+        self.raw_conn = raw_conn
+        self.is_postgres = is_postgres
+
+    def execute(self, sql: str, params: tuple[Any, ...] | list[Any] = ()) -> Any:
+        """Execute query with automatic parameter placeholder adaptation."""
+        if self.is_postgres:
+            sql = sql.replace("?", "%s")
+            return self.raw_conn.execute(sql, tuple(params))
+        return self.raw_conn.execute(sql, tuple(params))
+
+
+def init_db(db_target: str) -> None:
+    """Initialize database schema for either SQLite or PostgreSQL."""
+    if db_target.startswith(("postgresql://", "postgres://")):
+        norm_url = db_target
+        if norm_url.startswith("postgres://"):
+            norm_url = "postgresql://" + norm_url[len("postgres://") :]
+        with psycopg.connect(norm_url, autocommit=True) as pg_conn, pg_conn.cursor() as cur:
+            cur.execute(get_postgres_schema_sql())
+    else:
+        db_path = db_target.replace("sqlite:///", "")
+        sqlite_conn = sqlite3.connect(db_path)
+        try:
+            sqlite_conn.executescript(SCHEMA_SQL)
+            sqlite_conn.commit()
+        finally:
+            sqlite_conn.close()
+
+
 def init_sqlite_db(db_path: str) -> None:
-    """Initialize SQLite database with full Benchbook schema."""
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.executescript(SCHEMA_SQL)
-        conn.commit()
-    finally:
-        conn.close()
+    """Backwards-compatible SQLite initializer."""
+    init_db(db_path)
 
 
 @contextmanager
-def get_db_connection(db_path: str) -> Generator[sqlite3.Connection, None, None]:
-    """Provide a transactional scope around SQLite operations."""
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+def get_db_connection(db_target: str) -> Generator[ConnectionWrapper, None, None]:
+    """Provide a transactional scope around SQLite or PostgreSQL operations."""
+    if db_target.startswith(("postgresql://", "postgres://")):
+        norm_url = db_target
+        if norm_url.startswith("postgres://"):
+            norm_url = "postgresql://" + norm_url[len("postgres://") :]
+        pg_conn = psycopg.connect(norm_url, row_factory=dict_row)
+        try:
+            with pg_conn.transaction():
+                yield ConnectionWrapper(pg_conn, is_postgres=True)
+        finally:
+            pg_conn.close()
+    else:
+        db_path = db_target.replace("sqlite:///", "")
+        sqlite_conn = sqlite3.connect(db_path)
+        sqlite_conn.row_factory = sqlite3.Row
+        sqlite_conn.execute("PRAGMA foreign_keys = ON;")
+        try:
+            yield ConnectionWrapper(sqlite_conn, is_postgres=False)
+            sqlite_conn.commit()
+        except Exception:
+            sqlite_conn.rollback()
+            raise
+        finally:
+            sqlite_conn.close()

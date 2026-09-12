@@ -1,4 +1,46 @@
-## Latest worker return: BB-001 Benchbook Initial Repository and Full Workflow Slice (2026-09-12)
+## Latest worker return: BB-002 Benchbook Release Readiness and Zero-Spend Deployment Path (2026-09-12)
+
+TASK_ID: BB-002
+STATUS: READY_FOR_REVIEW
+WORKER: AGY, senior full-stack developer
+MODEL: Gemini 3.8 Flash High
+EFFORT: HIGH
+BRANCH: worker/agy/BB-002
+BASE_COMMIT: 50038fc
+PROPOSED_COMMIT_MSG: feat(benchbook): complete release readiness and deployment path (BB-002)
+
+Read `docs/BB-002_ACCEPTANCE.md`. Continued repository for Project 2 (Benchbook) at:
+`D:\Work\Codex\Hackathon Projects\Agents For Humans\02_BENCHBOOK`
+
+Key Deliverables:
+1. **Backend Hardening (`services/repair_service`)**:
+   - Dual-engine database support: SQLite (default) and PostgreSQL (`psycopg[binary]>=3.1.0`) with schema pragma adaptation and query placeholder translation.
+   - Dynamic store factory (`get_repair_job_store`) resolving store based on connection URL scheme.
+   - Strict CORS allow-list parsing from environment setting (`CORS_ORIGINS`).
+   - Container readiness probe (`GET /api/ready`) returning 503 on database disconnect, and honest health reporting (`GET /api/health`).
+2. **Zero-Spend Deployment Manifests**:
+   - `render.yaml`, `railway.json`, `Procfile`, `Dockerfile`, `apps/web/vercel.json`, and `.env.example` templates.
+3. **Deterministic Release Smoke Script**:
+   - `scripts/release_smoke.py`: 17-point check verifying all 11 stages, human gates (403), advisory provenance, optimistic conflict (409), idempotency replay, and 10 child tables readback. 17/17 passed.
+   - Integrated into pytest in `services/repair_service/tests/test_release_smoke.py`.
+4. **Judge-Facing UI Polish (`apps/web`)**:
+   - Added 60-second Evaluator Guide banner, database engine badge, and human-gate lock badges on timeline.
+5. **Verification**:
+   - Backend pytest: 37 passed in 1.22s (0 skipped).
+   - Frontend vitest: 9 passed in 250ms (0 skipped).
+   - Ruff check & format: clean across 31 source files.
+   - Strict Mypy: clean across 31 source files.
+   - Frontend tsc & eslint: clean (0 errors, 0 warnings).
+   - Production bundle built in 848ms.
+   - Personal spend: Exactly ₹0.00.
+   - Deployment status: `BLOCKED_INFRA` (waiting on hosted credentials).
+
+NEXT_CODEX_MODE: ASTRA_HIGH
+REASON: BB-002 is complete, verified across frontend, backend, and deployment artifacts; ready for Codex review.
+
+---
+
+## BB-001 Benchbook Initial Repository and Full Workflow Slice (2026-09-12)
 
 TASK_ID: BB-001
 STATUS: READY_FOR_REVIEW
