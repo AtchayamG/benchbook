@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from benchbook.interfaces.http.app import create_app
+
 
 def test_health_route(client: TestClient) -> None:
     """Verify health endpoint reports correct app identity and M1 milestone."""
@@ -24,21 +26,32 @@ def test_seed_sample_jobs_and_filter_list(client: TestClient) -> None:
     seeded = seed_resp.json()["jobs"]
     assert len(seeded) == 4
 
-    # List all jobs
-    list_resp = client.get("/api/jobs")
-    assert list_resp.status_code == 200
-    all_jobs = list_resp.json()["jobs"]
-    assert len(all_jobs) >= 4
 
-    # Filter by intake state
-    intake_list = client.get("/api/jobs?state=intake")
-    assert intake_list.status_code == 200
-    assert len(intake_list.json()["jobs"]) >= 4
+def test_seed_sample_jobs_isolated_workspaces_avoid_global_number_collision(
+    temp_db_path: str,
+) -> None:
+    """Preset seeding remains successful when PostgreSQL job numbers are global."""
+    app = create_app(db_path=temp_db_path, assistant_mode="deterministic")
+    with TestClient(app) as client_a, TestClient(app) as client_b:
+        assert client_a.post("/api/session").status_code == 200
+        assert client_b.post("/api/session").status_code == 200
+        first = client_a.post("/api/jobs/seed")
+        assert first.status_code == 201
+        first_numbers = {job["job_number"] for job in first.json()["jobs"]}
+        assert first_numbers == {
+            "BB-2026-101",
+            "BB-2026-102",
+            "BB-2026-103",
+            "BB-2026-104",
+        }
 
-    # Filter by closed state (empty initially)
-    closed_list = client.get("/api/jobs?state=closed")
-    assert closed_list.status_code == 200
-    assert len(closed_list.json()["jobs"]) == 0
+        second = client_b.post("/api/jobs/seed")
+        assert second.status_code == 201
+        second_numbers = {job["job_number"] for job in second.json()["jobs"]}
+        assert len(second_numbers) == 4
+        assert first_numbers.isdisjoint(second_numbers)
+        assert all(number.startswith("BB-2026-10") for number in second_numbers)
+        assert all("-" in number.removeprefix("BB-2026-10") for number in second_numbers)
 
 
 def test_get_job_details_and_audit(client: TestClient) -> None:

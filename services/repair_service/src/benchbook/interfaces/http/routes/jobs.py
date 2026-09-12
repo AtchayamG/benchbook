@@ -124,6 +124,14 @@ def seed_sample_jobs(
         # Avoid duplicate job_number if re-seeded in this workspace
         existing = store.get_job_by_number(sample_job.job_number, workspace_id=workspace_id)
         if not existing:
+            # Job numbers are globally unique in PostgreSQL. Preserve the familiar
+            # preset number for the first workspace, then add a short workspace
+            # suffix when another public workbench already owns that number.
+            global_owner = store.get_job_by_number(sample_job.job_number)
+            if global_owner and global_owner.workspace_id != workspace_id:
+                sample_job = sample_job.model_copy(
+                    update={"job_number": f"{sample_job.job_number}-{workspace_id[-6:]}"}
+                )
             store.create_job(sample_job, workspace_id=workspace_id)
             seeded.append(sample_job.model_dump())
     return {"message": f"Seeded {len(seeded)} sample jobs.", "jobs": seeded}
