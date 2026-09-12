@@ -1,0 +1,14 @@
+.git
+.venv
+services/repair_service/.venv
+apps/web/node_modules
+node_modules
+test-results
+output
+.playwright-cli
+.pytest_cache
+.mypy_cache
+.ruff_cache
+benchbook.db
+*.pyc
+__pycache__
