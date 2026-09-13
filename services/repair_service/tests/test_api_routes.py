@@ -38,12 +38,7 @@ def test_seed_sample_jobs_isolated_workspaces_avoid_global_number_collision(
         first = client_a.post("/api/jobs/seed")
         assert first.status_code == 201
         first_numbers = {job["job_number"] for job in first.json()["jobs"]}
-        assert first_numbers == {
-            "BB-2026-101",
-            "BB-2026-102",
-            "BB-2026-103",
-            "BB-2026-104",
-        }
+        assert len(first_numbers) == 4
 
         second = client_b.post("/api/jobs/seed")
         assert second.status_code == 201
@@ -52,6 +47,11 @@ def test_seed_sample_jobs_isolated_workspaces_avoid_global_number_collision(
         assert first_numbers.isdisjoint(second_numbers)
         assert all(number.startswith("BB-2026-10") for number in second_numbers)
         assert all("-" in number.removeprefix("BB-2026-10") for number in second_numbers)
+        for client in (client_a, client_b):
+            again = client.post("/api/jobs/seed")
+            assert again.status_code == 201
+            assert again.json()["jobs"] == []
+            assert len(client.get("/api/jobs").json()["jobs"]) == 4
 
 
 def test_get_job_details_and_audit(client: TestClient) -> None:

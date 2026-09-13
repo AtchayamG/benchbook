@@ -121,17 +121,22 @@ def seed_sample_jobs(
     seeded: list[dict[str, Any]] = []
     for i in range(len(SAMPLE_PRESETS)):
         sample_job = create_sample_job(i).model_copy(update={"workspace_id": workspace_id})
-        # Avoid duplicate job_number if re-seeded in this workspace
+        # Retain old presets already owned by this workspace.
         existing = store.get_job_by_number(sample_job.job_number, workspace_id=workspace_id)
         if not existing:
-            # Job numbers are globally unique in PostgreSQL. Preserve the familiar
-            # preset number for the first workspace, then add a short workspace
-            # suffix when another public workbench already owns that number.
-            global_owner = store.get_job_by_number(sample_job.job_number)
-            if global_owner and global_owner.workspace_id != workspace_id:
-                sample_job = sample_job.model_copy(
-                    update={"job_number": f"{sample_job.job_number}-{workspace_id[-6:]}"}
-                )
-            store.create_job(sample_job, workspace_id=workspace_id)
-            seeded.append(sample_job.model_dump())
+            old_number = f"{sample_job.job_number}-{workspace_id[-6:]}"
+            if store.get_job_by_number(old_number, workspace_id=workspace_id):
+                continue
+            number = f"{sample_job.job_number}-{workspace_id}"
+            if store.get_job_by_number(number, workspace_id=workspace_id):
+                continue
+            sample_job = sample_job.model_copy(update={"job_number": number})
+            # A stable request payload/key also serializes simultaneous seed clicks.
+            created = store.create_job(
+                sample_job,
+                workspace_id=workspace_id,
+                idempotency_key=f"preset-v2-{i}",
+                payload={"preset_index": i},
+            )
+            seeded.append(created.model_dump())
     return {"message": f"Seeded {len(seeded)} sample jobs.", "jobs": seeded}
