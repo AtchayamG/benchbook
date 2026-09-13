@@ -68,3 +68,6 @@ Thumbs.db
 
 .vercel
 .env*
+video/pipeline/capture/
+video/pipeline/encoded/
+video/pipeline/voice/
