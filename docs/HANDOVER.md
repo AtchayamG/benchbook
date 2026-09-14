@@ -247,3 +247,67 @@ Key Deliverables:
 
 NEXT_CODEX_MODE: ASTRA_HIGH
 REASON: BB-001 is complete, verified across frontend and backend; ready for Codex review.
+-
+## Claude Final Submission Handoff (2026-09-14)
+- Devpost draft `1181707`, slug `benchbook-human-approved-repair-shop-workflow`; track **Professional Agents**; Individual; India.
+- Repo https://github.com/AtchayamG/benchbook | live https://web-eight-phi-69.vercel.app | video https://youtu.be/WhYPSrmjgzc
+- Architecture: `architecture/benchbook_architecture_readable.png` (or PDF only if explicitly required). Thumbnail is already uploaded; do not repeat.
+- AWS Builder ID: `atchayamganesh@gmail.com`. Testing: seed synthetic jobs, open one, add diagnostics, request advisory, inspect provenance/timeline; messages remain drafts and estimate/QC/closure are human actions.
+- Truth limits: synthetic roles, no verified identity, no automatic ordering/payment/messaging, no AgentCore claim. Submit only after authenticated Devpost readback shows Submitted and timestamp.
+
+---
+
+## Devpost submission completed and verified (2026-09-14)
+
+TASK: Final Devpost submission
+WORKER: Claude, senior release and Devpost submission engineer
+STATUS: COMPLETED — verified by authenticated Devpost readback
+
+**Result:** Benchbook is **Submitted** to the Agents for Humans Hackathon.
+Submission ID `1181707`, track **Professional Agents**, public project page
+https://devpost.com/software/benchbook-human-approved-repair-shop-workflow
+
+Verified from the authenticated page
+`/submit-to/30317-agents-for-humans-hackathon/manage/submissions`, which shows the
+literal `SUBMITTED` badge; the project page shows `SUBMITTED TO — Agents for
+Humans Hackathon`; the wizard reads 4/5 steps done with Manage team, Project
+overview, Project details and Additional info all complete.
+
+**No `submitted_at` is claimed.** Devpost exposes no per-submission submitted_at
+in its participant UI — only the deadline and a project "updated" date. Observed
+submission time from the session was ~2026-09-14T10:20–10:38+05:30.
+
+**Fields saved:** Submitter Type `Individual`; Country `India`; Track
+`Professional Agents`; repo `https://github.com/AtchayamG/benchbook`; AWS Builder
+ID `atchayamganesh@gmail.com`; live demo `https://web-eight-phi-69.vercel.app`;
+930-character testing instructions; video `https://youtu.be/WhYPSrmjgzc`
+(re-entered on the Project details step, where the field rendered empty and would
+otherwise have been cleared on save). Organization name and bonus blog URL left
+blank deliberately.
+
+**Architecture diagram:** the required upload was empty (`File can't be blank`).
+Uploaded the local working-tree `architecture/benchbook_architecture_readable.png`
+(306,829 bytes) and also added it to the public image gallery with a caption.
+
+KNOWN_ISSUE / ACTION FOR OWNER: the repo copy of that diagram is **stale**. Both
+readable PNGs are modified-and-uncommitted locally; the committed Benchbook blob
+is 122,544 bytes versus 306,829 in the working tree, and the committed version is
+an older layout without directional flow arrows and without the human-decision
+boundary and "messages remain drafts / no automatic purchases" disclosures. The
+submitted diagram is the correct newer one, but **the public repo still shows the
+old diagram** until these files are committed and pushed. That push was not
+performed here (public repository change, not authorised in this task).
+
+CORRECTION: `docs/DEVPOST_SUBMISSION.md` previously recorded the track as
+"Everyday Agents". That was wrong and has been corrected to Professional Agents.
+
+TRUTH BOUNDARIES: nothing submitted claims AgentCore deployment, verified
+real-world identities, direct WhatsApp/email/PDF/OCR ingestion, automatic
+payment/signing/messaging/ordering/dispatch, or real supplier stock or prices.
+Parts are described as a synthetic demo catalogue with unverified prices.
+
+SPEND: ₹0.00 / $0.00.
+
+NEXT_SAFE_ACTION: optionally commit and push the updated `architecture/` PNGs so
+the public repo matches the submitted diagram. Editing is allowed until the
+deadline (Sep 15, 2026 @ 5:30am GMT+5:30); after it, do not edit anything.

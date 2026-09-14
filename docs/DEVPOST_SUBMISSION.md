@@ -1,7 +1,19 @@
 # Benchbook — Human-led repair shop workflow
 
 ## Track
-Everyday Agents — Agents for Humans Hackathon
+Professional Agents — Agents for Humans Hackathon
+
+(Corrected 2026-09-14: this file previously read "Everyday Agents", which did not
+match the program handoff or the submitted entry. The submitted track is
+**Professional Agents**.)
+
+## Submission status (verified 2026-09-14)
+
+Submitted. Submission ID `1181707`. Public project page:
+https://devpost.com/software/benchbook-human-approved-repair-shop-workflow
+Verified by authenticated Devpost readback showing the `SUBMITTED` badge; see
+`00_PROGRAM_CONTROL/SUBMISSION_RECEIPT_2026-09-14.md` for the full receipt,
+including why no `submitted_at` timestamp is claimed (Devpost does not expose one).
 
 ## What it solves
 Small repair shops lose time chasing the state of every ticket across intake,
